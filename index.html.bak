@@ -85,8 +85,8 @@ window.addEventListener("unhandledrejection",function(e){
 const {useState,useMemo,useCallback,useEffect,useRef}=React;
 
 /* ===== Supabase 設定 (BUDDICA高松店) ===== */
-const SUPABASE_URL = "";  // ← 高松店用Supabase URLを設定
-const SUPABASE_KEY = "";  // ← 高松店用anon keyを設定
+const SUPABASE_URL = "https://iebojjjgabjmiczmtsm.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllYm9qampnYWJqbWljenptdHNtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0MTk5MzEsImV4cCI6MjA5MTk5NTkzMX0.4jFXiz0W_rCzLKnBl1u8nHgNG9WSKxSQLUw0ys-fjjg"; // anon key（RLSで保護）
 const SB_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
 let sb = null;
 let sbAuthReady = false;
@@ -7165,7 +7165,7 @@ function PASGuard({children,label}){
   const[unlocked,setUnlocked]=useState(false);
   const[input,setInput]=useState("");
   const[err,setErr]=useState("");
-  const code="1823";
+  const code="BD2026";
   const unlock=()=>{
     if(!code)return;
     if(input===code){
@@ -7178,9 +7178,9 @@ function PASGuard({children,label}){
       <div style={{fontSize:32,marginBottom:12}}>🔒</div>
       <div style={{fontSize:16,fontWeight:800,color:"#1e293b",marginBottom:4}}>{label||"この画面はロックされています"}</div>
       <div style={{fontSize:12,color:"#64748b",marginBottom:20}}>閲覧にはパスコードが必要です</div>
-      <input type="password" inputMode="numeric" maxLength={4} value={input} onChange={e=>setInput(e.target.value.replace(/\D/g,""))} onKeyDown={e=>e.key==="Enter"&&unlock()} placeholder="4桁のパスコード" style={{width:"100%",padding:"12px",border:"1.5px solid #d1d5db",borderRadius:10,fontSize:20,textAlign:"center",letterSpacing:8,boxSizing:"border-box",marginBottom:8}}/>
+      <input type="password" maxLength={6} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&unlock()} placeholder="パスコード" style={{width:"100%",padding:"12px",border:"1.5px solid #d1d5db",borderRadius:10,fontSize:20,textAlign:"center",letterSpacing:8,boxSizing:"border-box",marginBottom:8}}/>
       {err&&<div style={{color:"#dc2626",fontSize:12,fontWeight:600,marginBottom:8}}>{err}</div>}
-      <button onClick={unlock} disabled={input.length<4} style={{width:"100%",padding:"12px",background:input.length>=4?"linear-gradient(135deg,#1e40af,#2563eb)":"#94a3b8",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:input.length>=4?"pointer":"not-allowed"}}>認証</button>
+      <button onClick={unlock} disabled={input.length<6} style={{width:"100%",padding:"12px",background:input.length>=6?"linear-gradient(135deg,#1e40af,#2563eb)":"#94a3b8",color:"#fff",border:"none",borderRadius:10,fontSize:14,fontWeight:700,cursor:input.length>=6?"pointer":"not-allowed"}}>認証</button>
     </div>
   </div>;
 }
