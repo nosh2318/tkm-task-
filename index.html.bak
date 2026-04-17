@@ -85,8 +85,8 @@ window.addEventListener("unhandledrejection",function(e){
 const {useState,useMemo,useCallback,useEffect,useRef}=React;
 
 /* ===== Supabase 設定 (BUDDICA高松店) ===== */
-const SUPABASE_URL = "https://iebojjjgabjmiczmtsm.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllYm9qampnYWJqbWljenptdHNtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0MTk5MzEsImV4cCI6MjA5MTk5NTkzMX0.4jFXiz0W_rCzLKnBl1u8nHgNG9WSKxSQLUw0ys-fjjg"; // anon key（RLSで保護）
+const SUPABASE_URL = "https://iuxsjjyfzjyohqvnaxei.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml1eHNqanlmemp5b2hxdm5heGVpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0NjI1MzYsImV4cCI6MjA5MjAzODUzNn0.lwF5DBs8PbzmTMKpW08jq-8IwvJt4I-Dqm07I5VhwmY"; // anon key（RLSで保護）
 const SB_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
 let sb = null;
 let sbAuthReady = false;
