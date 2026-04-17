@@ -93,14 +93,6 @@ let sbAuthReady = false;
 const sbAuthPromise = (async () => {
   if (!SB_ENABLED) { sbAuthReady = true; return; }
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-  try {
-    const { data: { session } } = await sb.auth.getSession();
-    if (!session) {
-      await sb.auth.signInAnonymously();
-    }
-  } catch (e) {
-    console.warn("[Auth] Anonymous sign-in failed:", e.message);
-  }
   sbAuthReady = true;
 })();
 
