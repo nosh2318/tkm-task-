@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+<title>BUDDICA高松店 タスク管理</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1e293b">
+<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiQlVERElDQemrmOadvuW6lyDjgr/jgrnjgq/nrqHnkIYiLCJzaG9ydF9uYW1lIjoiVEtNIiwic3RhcnRfdXJsIjoiLiIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiMxZTI5M2IiLCJ0aGVtZV9jb2xvciI6IiMxZTI5M2IiLCJpY29ucyI6W119">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:text;user-select:text}
+html,body{height:100%;overflow:hidden;margin:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;background:#f3f4f6}
+#splash-screen{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#1e293b,#334155)}
+#splash-screen .logo{width:72px;height:72px;border-radius:20px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;margin-bottom:16px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#splash-screen .logo span{color:#fff;font-weight:900;font-size:32px}
+#splash-screen .title{font-size:18px;font-weight:800;color:#fff;margin-bottom:4px}
+#splash-screen .sub{font-size:11px;color:rgba(255,255,255,.7);margin-bottom:24px}
+#splash-screen .spinner{width:28px;height:28px;border:3px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
+#splash-screen .status{margin-top:14px;font-size:11px;color:rgba(255,255,255,.7);transition:opacity .2s}
+@keyframes sp{to{transform:rotate(360deg)}}
+::-webkit-scrollbar{height:5px;width:5px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+.fade-in{animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.tl-bar{position:absolute;top:3px;bottom:3px;border-radius:4px;cursor:pointer;display:flex;align-items:center;padding:0 4px;overflow:hidden;white-space:nowrap;font-size:9px;font-weight:600;transition:opacity .2s;z-index:2}
+.tl-bar:hover{opacity:.85;z-index:3}
+.top-nav{display:none;position:sticky;top:0;left:0;right:0;z-index:100;background:#1e293b;padding:4px 6px env(safe-area-inset-top,4px);box-shadow:0 2px 8px rgba(0,0,0,.12);overflow-x:auto;-webkit-overflow-scrolling:touch}
+.top-nav button{flex-shrink:0;display:inline-flex;align-items:center;gap:3px;padding:6px 10px;border:none;background:transparent;cursor:pointer;font-size:11px;color:#94a3b8;transition:all .15s;border-radius:8px;font-weight:600;white-space:nowrap}
+.top-nav button.active{background:#2563eb;color:#fff}
+.top-nav button .ico{font-size:16px}
+.sidebar{width:56px;min-width:56px;background:#1e293b;display:flex;flex-direction:column;align-items:center;padding-top:8px;gap:2px}
+.sidebar button{width:44px;height:44px;border-radius:10px;border:none;background:transparent;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#94a3b8;font-size:9px;gap:1px;transition:all .15s}
+.sidebar button:hover{background:#334155;color:#e2e8f0}
+.sidebar button.active{background:#2563eb;color:#fff}
+.sidebar button .ico{font-size:18px}
+@media(max-width:768px){.sidebar{display:none!important}.top-nav{display:flex!important}.top-nav.hide-on-top{display:none!important}.main-area{padding-top:0!important}.sync-desktop{display:none!important}}
+@media(min-width:769px){.top-nav{display:none!important}.sidebar{display:flex!important}.sidebar.hide-on-top{display:none!important}}
+.op-fullscreen{position:fixed;inset:0;z-index:200;background:#f3f4f6;display:flex;flex-direction:column}
+.op-fullscreen .op-header{background:linear-gradient(135deg,#1e40af,#2563eb);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.op-fullscreen .op-body{flex:1;overflow:auto;padding:8px}
+@media(max-width:768px){.op-fullscreen .op-body{padding:4px}}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;z-index:300;padding:12px}
+.modal-box{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.15);width:100%;overflow-y:auto}
+.input-s{border:1px solid #d1d5db;border-radius:8px;padding:5px 8px;font-size:12px;width:100%}
+.btn-primary{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff;border:none;border-radius:8px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-ghost{background:none;border:1px solid #d1d5db;border-radius:8px;padding:6px 16px;font-size:12px;cursor:pointer;color:#374151}
+.shift-grid{position:relative;overflow:auto;max-height:400px}
+.shift-grid table{border-collapse:collapse}
+.shift-grid th,.shift-grid td{border:1px solid #d1d5db}
+.shift-grid thead th{position:sticky;top:0;z-index:2}
+.shift-col{position:sticky;left:0;z-index:3;background:#fff}
+.shift-col-header{position:sticky;left:0;z-index:4;background:#D2B48C}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+details>summary{list-style:none}details>summary::-webkit-details-marker{display:none}details[open]>summary span:first-child{transform:rotate(90deg);display:inline-block}
+</style>
+</head>
+<body>
+<!-- Splash -->
+<div id="splash-screen">
+  <div class="logo"><span>B</span></div>
+  <div class="title">BUDDICA高松店 タスク管理</div>
+  <div class="sub">BUDDICA TAKAMATSU</div>
+  <div class="spinner"></div>
+  <div class="status" id="splash-status">起動中...</div>
+</div>
+<div id="root"></div>
+
+<script>
+// SW登録
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.getRegistrations().then(function(regs){
+    return Promise.all(regs.map(function(r){return r.unregister();}));
+  }).then(function(){
+    return caches.keys();
+  }).then(function(keys){
+    return Promise.all(keys.map(function(k){return caches.delete(k);}));
+  }).then(function(){
+    navigator.serviceWorker.register('/sw.js?v=1');
+  }).catch(function(){});
+}
+// キャッシュクリア
+if(!localStorage.getItem('tkm_cache_cleared_v1')){
+  localStorage.removeItem('tkm_res_backup_v2');
+  localStorage.removeItem('tkm_fleet_backup');
+  localStorage.removeItem('tkm_reservations');
+  localStorage.removeItem('tkm_fleet');
+  localStorage.setItem('tkm_cache_cleared_v1','1');
+}
+var ss=document.getElementById('splash-status');
+function splashMsg(t){if(ss)ss.textContent=t;}
+function showErr(title,detail){
+  var d=document.createElement("div");
+  d.style.cssText="position:fixed;top:0;left:0;right:0;background:#fee2e2;color:#991b1b;padding:12px;font-size:12px;z-index:999999;white-space:pre-wrap;max-height:300px;overflow:auto";
+  d.textContent=title+"\n"+detail;
+  document.body.appendChild(d);
+}
+window.onerror=function(msg,src,line,col,err){
+  showErr("[JS Error] "+msg,"Source: "+(src||"unknown")+"\nLine: "+line+" Col: "+col+(err&&err.stack?"\n"+err.stack:""));
+};
+window.addEventListener("unhandledrejection",function(e){
+  var r=e.reason;
+  console.error("Unhandled promise:",r);
+});
+window.hideSplash=function(){
+  var sp=document.getElementById('splash-screen');
+  if(sp){sp.style.transition='opacity .3s';sp.style.opacity='0';setTimeout(function(){sp.remove();},350);}
+};
+window.loadXlsx=function(){
+  return new Promise(function(resolve,reject){
+    if(window.XLSX){resolve(window.XLSX);return;}
+    var s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload=function(){resolve(window.XLSX);};
+    s.onerror=reject;
+    document.head.appendChild(s);
+  });
+};
+</script>
+
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<script>splashMsg('ライブラリ読込中...');</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+<script>splashMsg('アプリ準備中...');</script>
+<script src="/app.js?v=100"></script>
+</body>
+</html>
