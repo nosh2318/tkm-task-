@@ -135,7 +135,7 @@ const DB = {
   _broadcastCh: null,
   _initBroadcast() {
     if (!sb || DB._broadcastCh) return;
-    DB._broadcastCh = sb.channel("nha-broadcast");
+    DB._broadcastCh = sb.channel("tkm-broadcast");
     DB._broadcastCh.subscribe();
   },
   broadcastImportLock(locked, user) {
@@ -7436,7 +7436,7 @@ function MemoBox({today}){
   const load=()=>DB.fetchMemos(today).then(d=>setMemos(d||[])).catch(()=>{});
   React.useEffect(()=>{
     load();
-    if(sb){chRef.current=sb.channel("nha-memos-top").on("postgres_changes",{event:"*",schema:"public",table:"tkm_memos"},load).subscribe();}
+    if(sb){chRef.current=sb.channel("tkm-memos-top").on("postgres_changes",{event:"*",schema:"public",table:"tkm_memos"},load).subscribe();}
     const iv=setInterval(load,30000);
     return()=>{clearInterval(iv);if(chRef.current)sb.removeChannel(chRef.current);};
   },[today]);
@@ -12794,7 +12794,7 @@ function App(){
   const silentRefreshRef=useRef(silentRefresh);silentRefreshRef.current=silentRefresh;
   useEffect(()=>{
     if(!sb)return;
-    const ch=sb.channel("nha-realtime")
+    const ch=sb.channel("tkm-realtime")
       .on("postgres_changes",{event:"*",schema:"public",table:"tkm_reservations"},payload=>{
         if(importingRef.current)return;
         if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
