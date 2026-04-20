@@ -1720,7 +1720,6 @@ function JalanPaymentWidget({data,jalanPay,onGoJalan}){
   const counts={};jpNew.forEach(p=>{counts[p.status]=(counts[p.status]||0)+1;});
   const total=jpNew.length;
   const needAction=(counts.new||0)+(counts.link_created||0)+(counts.email_sent||0);
-  if(total===0)return null;
   return <div onClick={onGoJalan} style={{marginBottom:8,padding:"12px 14px",borderRadius:12,background:"linear-gradient(135deg,#fdf2f8,#fce7f3)",border:"1px solid #fbcfe8",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
