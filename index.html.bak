@@ -1699,6 +1699,98 @@ function AccountingPanel({staff,onSynced}){
 }
 
 /* ==========================================
+   直近予約変動ウィジェット（TOP画面用）
+   ========================================== */
+function TopRecentWidget(){
+  const[hours,setHours]=useState(24);
+  const[rd,setRd]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[open,setOpen]=useState(true);
+  const OTA_LABEL={"HP":"HP","J":"じゃらん","R":"楽天","O":"エアトリ","A":"エアトリ","S":"スカイ","RC":"レンカ","G":"GoGo","TK":"直接","direct":"直接"};
+  const OTA_COLOR={"HP":"#1e40af","J":"#dc2626","R":"#b91c1c","O":"#0891b2","A":"#0891b2","S":"#7c3aed","RC":"#059669","G":"#92400e","TK":"#d97706"};
+  const fmt=n=>Number(n).toLocaleString();
+  const load=useCallback(async()=>{
+    if(!sb)return;
+    setLoading(true);
+    try{
+      const cutoff=new Date(Date.now()-hours*3600000).toISOString();
+      const rev=(r)=>{const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
+      const[{data:tNew},{data:tCan}]=await Promise.all([
+        sb.from("tkm_reservations").select("id,ota,status,created_at,end_date,start_date,price,base_price,option_price,discount,name").not("created_at","is",null).gte("created_at",cutoff).neq("status","cancelled").neq("status","キャンセル").neq("status","cancel").order("created_at",{ascending:false}),
+        sb.from("tkm_reservations").select("id,ota,status,created_at,end_date,start_date,price,base_price,option_price,discount,name").not("created_at","is",null).gte("created_at",cutoff).in("status",["cancelled","キャンセル","cancel"]).order("created_at",{ascending:false}),
+      ]);
+      const addMeta=(arr)=>(arr||[]).map(r=>({...r,_rd:r.end_date,_ld:r.start_date,_rev:rev(r)}));
+      const newAll=addMeta(tNew).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
+      const canAll=addMeta(tCan).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
+      setRd({newAll,canAll,ts:new Date().toLocaleString("ja-JP")});
+    }catch(e){setRd({error:e.message});}
+    setLoading(false);
+  },[hours]);
+  useEffect(()=>{load();},[load]);
+  const newTotal=(rd?.newAll||[]).reduce((s,r)=>s+r._rev,0);
+  const canTotal=(rd?.canAll||[]).reduce((s,r)=>s+r._rev,0);
+  const net=newTotal-canTotal;
+  return(
+    <div style={{marginBottom:8,borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden"}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",background:"#f8fafc",cursor:"pointer",userSelect:"none"}}>
+        <span style={{fontSize:14}}>📡</span>
+        <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>直近予約変動</span>
+        {rd&&!rd.error&&<span style={{fontSize:10,color:"#94a3b8",marginLeft:4}}>新規{rd.newAll.length}件 / CXL{rd.canAll.length}件</span>}
+        <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8"}}>{open?"▲":"▼"}</span>
+      </div>
+      {open&&<div style={{padding:"10px 12px",background:"#fff"}}>
+        <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8,flexWrap:"wrap"}}>
+          <select value={hours} onChange={e=>setHours(Number(e.target.value))} style={{border:"1px solid #d1d5db",borderRadius:6,padding:"4px 8px",fontSize:11,fontWeight:700}}>
+            <option value={6}>直近6時間</option><option value={12}>直近12時間</option><option value={24}>直近24時間</option><option value={48}>直近48時間</option><option value={72}>直近72時間</option>
+          </select>
+          <button onClick={load} disabled={loading} style={{padding:"4px 12px",borderRadius:6,border:"none",background:"#2563eb",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",opacity:loading?0.5:1}}>{loading?"🔄":"▶ 更新"}</button>
+          {rd?.ts&&<span style={{fontSize:9,color:"#94a3b8"}}>{rd.ts}</span>}
+        </div>
+        {rd?.error&&<div style={{fontSize:11,color:"#dc2626"}}>❌ {rd.error}</div>}
+        {rd&&!rd.error&&<>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:8}}>
+            <div style={{padding:"8px 10px",borderRadius:8,background:"#f0fdf4",border:"1px solid #86efac"}}>
+              <div style={{fontSize:9,color:"#065f46",fontWeight:700}}>📥 新規</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#059669"}}>{rd.newAll.length}<span style={{fontSize:10}}>件</span></div>
+              <div style={{fontSize:10,color:"#065f46"}}>¥{fmt(newTotal)}</div>
+            </div>
+            <div style={{padding:"8px 10px",borderRadius:8,background:"#fef2f2",border:"1px solid #fca5a5"}}>
+              <div style={{fontSize:9,color:"#991b1b",fontWeight:700}}>📤 CXL</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#dc2626"}}>{rd.canAll.length}<span style={{fontSize:10}}>件</span></div>
+              <div style={{fontSize:10,color:"#991b1b"}}>¥{fmt(canTotal)}</div>
+            </div>
+            <div style={{padding:"8px 10px",borderRadius:8,background:"#eff6ff",border:"1px solid #93c5fd"}}>
+              <div style={{fontSize:9,color:"#1e40af",fontWeight:700}}>📊 純増減</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#2563eb"}}>{net>=0?"+":""}{rd.newAll.length-rd.canAll.length}<span style={{fontSize:10}}>件</span></div>
+              <div style={{fontSize:10,color:"#1e40af"}}>{net>=0?"+":""}¥{fmt(net)}</div>
+            </div>
+          </div>
+          {rd.newAll.length===0&&rd.canAll.length===0&&<div style={{textAlign:"center",padding:"10px",color:"#94a3b8",fontSize:11}}>😴 この期間の変動なし</div>}
+          {rd.newAll.length>0&&<div style={{marginBottom:6}}>
+            <div style={{fontSize:10,fontWeight:700,color:"#059669",marginBottom:3}}>📥 新規予約</div>
+            {rd.newAll.map((r,i)=><div key={r.id} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",borderRadius:5,background:i%2?"#f8fafc":"#fff",marginBottom:2}}>
+              <span style={{background:OTA_COLOR[r.ota]||"#94a3b8",color:"#fff",padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,flexShrink:0}}>{OTA_LABEL[r.ota]||r.ota}</span>
+              <span style={{fontSize:10,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name||"-"}</span>
+              <span style={{fontSize:9,color:"#64748b",whiteSpace:"nowrap"}}>{(r._ld||"").slice(5,10)}〜{(r._rd||"").slice(5,10)}</span>
+              <span style={{fontSize:10,fontWeight:700,color:"#059669",whiteSpace:"nowrap"}}>¥{fmt(r._rev)}</span>
+            </div>)}
+          </div>}
+          {rd.canAll.length>0&&<div>
+            <div style={{fontSize:10,fontWeight:700,color:"#dc2626",marginBottom:3}}>📤 キャンセル</div>
+            {rd.canAll.map((r,i)=><div key={r.id} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",borderRadius:5,background:i%2?"#fef2f2":"#fff",marginBottom:2}}>
+              <span style={{background:"#94a3b8",color:"#fff",padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,flexShrink:0}}>{OTA_LABEL[r.ota]||r.ota}</span>
+              <span style={{fontSize:10,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textDecoration:"line-through",color:"#94a3b8"}}>{r.name||"-"}</span>
+              <span style={{fontSize:9,color:"#64748b",whiteSpace:"nowrap"}}>{(r._ld||"").slice(5,10)}〜{(r._rd||"").slice(5,10)}</span>
+              <span style={{fontSize:10,fontWeight:700,color:"#dc2626",whiteSpace:"nowrap"}}>¥{fmt(r._rev)}</span>
+            </div>)}
+          </div>}
+        </>}
+      </div>}
+    </div>
+  );
+}
+
+/* ==========================================
    Square請求書ウィジェット（TOP画面用）
    ========================================== */
 const SQUARE_GAS_URL="https://script.google.com/macros/s/AKfycbz48J4ib2la7KsspN9C3k3K8pbbwtrvqVgWw6wx_lmL4okJIQL_HE4I8Np140UodvTX/exec";
@@ -13253,6 +13345,7 @@ function App(){
               <MemoBox today={today}/>
               <LeadTimeWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               <ExtraUnpaidWidget/>
+              <TopRecentWidget/>
               <SquareInvoiceWidget/>
               {/* ===== 問い合わせ / 車両チェック ===== */}
               <div style={{display:"flex",gap:8,marginBottom:8}}>
