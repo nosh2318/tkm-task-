@@ -1716,21 +1716,66 @@ function AccountingPanel({staff,onSynced}){
    ========================================== */
 function JalanPaymentWidget({data,jalanPay,onGoJalan}){
   const[jpNew,setJpNew]=useState([]);
-  useEffect(()=>{(async()=>{try{const d=await DB.fetchJalanPayments();setJpNew(d);}catch(e){}})();},[]);
+  const[urgentList,setUrgentList]=useState([]);
+  useEffect(()=>{(async()=>{
+    try{const d=await DB.fetchJalanPayments();setJpNew(d);}catch(e){}
+    // 出発3日前で未決済のじゃらん予約を検出
+    if(sb){
+      try{
+        const now=new Date();
+        const threeDaysLater=new Date(now.getTime()+3*24*60*60*1000);
+        const todayStr=now.toISOString().slice(0,10);
+        const cutoffStr=threeDaysLater.toISOString().slice(0,10);
+        // じゃらん予約で出発日が今日〜3日後のもの
+        const{data:jalanRes}=await sb.from("tkm_reservations")
+          .select("id,reservation_id,name,start_date,ota,status")
+          .in("ota",["J","jalan","じゃらん"])
+          .gte("start_date",todayStr)
+          .lte("start_date",cutoffStr)
+          .not("status","in",'("cancelled","キャンセル","cancel")');
+        if(jalanRes&&jalanRes.length>0){
+          // tkm_jalan_paymentsでpaid済みを除外
+          let paidIds=new Set();
+          try{
+            const{data:paidData}=await sb.from("tkm_jalan_payments")
+              .select("reservation_id,status")
+              .eq("status","paid");
+            (paidData||[]).forEach(p=>paidIds.add(p.reservation_id));
+          }catch(e){}
+          const unpaid=jalanRes.filter(r=>!paidIds.has(r.id)&&!paidIds.has(r.reservation_id));
+          setUrgentList(unpaid);
+        }
+      }catch(e){console.warn("urgent check:",e);}
+    }
+  })();},[]);
   const counts={};jpNew.forEach(p=>{counts[p.status]=(counts[p.status]||0)+1;});
   const total=jpNew.length;
   const needAction=(counts.new||0)+(counts.link_created||0)+(counts.email_sent||0);
-  return <div onClick={onGoJalan} style={{marginBottom:8,padding:"12px 14px",borderRadius:12,background:"linear-gradient(135deg,#fdf2f8,#fce7f3)",border:"1px solid #fbcfe8",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <div style={{display:"flex",alignItems:"center",gap:8}}>
-        <span style={{fontSize:18}}>💳</span>
-        <div>
-          <div style={{fontSize:12,fontWeight:800,color:"#9d174d"}}>じゃらん事前決済</div>
-          <div style={{fontSize:10,color:"#be185d"}}>{total}件 / 入金済{counts.paid||0}件</div>
+  const daysUntil=(d)=>{const diff=Math.ceil((new Date(d)-new Date())/(1000*60*60*24));return diff<=0?"本日":diff+"日後";};
+  return <div style={{marginBottom:8}}>
+    <div onClick={onGoJalan} style={{padding:"12px 14px",borderRadius:urgentList.length>0?"12px 12px 0 0":12,background:"linear-gradient(135deg,#fdf2f8,#fce7f3)",border:"1px solid #fbcfe8",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:18}}>💳</span>
+          <div>
+            <div style={{fontSize:12,fontWeight:800,color:"#9d174d"}}>じゃらん事前決済</div>
+            <div style={{fontSize:10,color:"#be185d"}}>{total}件 / 入金済{counts.paid||0}件</div>
+          </div>
         </div>
+        {needAction>0&&<span style={{padding:"4px 10px",borderRadius:8,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,animation:"pulse 2s infinite"}}>{needAction}件 要対応</span>}
       </div>
-      {needAction>0&&<span style={{padding:"4px 10px",borderRadius:8,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,animation:"pulse 2s infinite"}}>{needAction}件 要対応</span>}
     </div>
+    {urgentList.length>0&&<div style={{padding:"10px 14px",borderRadius:"0 0 12px 12px",background:"#fef2f2",border:"1px solid #fecaca",borderTop:"none"}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+        <span style={{fontSize:14}}>🚨</span>
+        <span style={{fontSize:11,fontWeight:800,color:"#dc2626"}}>出発3日以内・未決済 {urgentList.length}件</span>
+      </div>
+      {urgentList.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderTop:i>0?"1px solid #fee2e2":"none"}}>
+        <span style={{fontSize:10,fontWeight:700,color:"#991b1b",minWidth:50}}>{r.reservation_id||r.id?.slice(0,8)}</span>
+        <span style={{fontSize:11,fontWeight:600,color:"#1e293b"}}>{r.name||"名前なし"}</span>
+        <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"2px 6px",borderRadius:4}}>{daysUntil(r.start_date)}</span>
+      </div>)}
+    </div>}
   </div>;
 }
 
