@@ -1838,10 +1838,14 @@ function SquareInvoiceWidget(){
   const[error,setError]=useState(null);
   const fetchData=React.useCallback(async()=>{
     try{
+      // じゃらん事前決済の予約番号を取得（重複除外用）
+      const{data:jpData}=sb?await sb.from("tkm_jalan_payments").select("reservation_id"):{data:[]};
+      const jalanResIds=new Set((jpData||[]).map(r=>r.reservation_id));
       const res=await fetch(SQUARE_GAS_URL);
       if(!res.ok)throw new Error("HTTP "+res.status);
       const json=await res.json();
-      setInvoices((json.rows||[]).filter(r=>!r.store||r.store==="BUDDICA高松店"));setError(null);
+      // jalan_paymentsに存在する予約番号をSquareウィジェットから除外
+      setInvoices((json.rows||[]).filter(r=>(!r.store||r.store==="BUDDICA高松店")&&!jalanResIds.has(r.resv_no)));setError(null);
     }catch(e){console.error("[Square]",e);setError(e.message);}
     finally{setLoading(false);}
   },[]);
@@ -1856,7 +1860,7 @@ function SquareInvoiceWidget(){
   return <div style={{marginBottom:8}}>
     <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:unpaid.length>0?"#fffbeb":"#f0fdf4",border:"1px solid "+(unpaid.length>0?"#fde68a":"#bbf7d0"),cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
       <span style={{fontSize:16}}>💳</span>
-      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>Square請求書（BUDDICA高松店）</span>
+      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>Square請求書（立替・予約外売上）</span>
       {unpaid.length>0&&<span style={{fontSize:10,fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"2px 8px",borderRadius:8}}>{unpaid.length}件未払い</span>}
       {unpaid.length===0&&<span style={{fontSize:10,fontWeight:600,color:"#059669"}}>全件入金済み</span>}
       <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8"}}>{open?"▲":"▼"}</span>
@@ -13991,7 +13995,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v1.0.0-TKM";
+const APP_VERSION="v1.0.1-TKM";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("tkm_app_version");
