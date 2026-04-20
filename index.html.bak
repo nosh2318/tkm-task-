@@ -441,6 +441,19 @@ const DB = {
     }
     const{data,error}=await sb.from("tkm_jalan_payment").select("*");if(error){dbLog("fetchJalanPay",false,error.message);return DB.jalanPayLsLoad();}dbLog("fetchJalanPay",true,(data||[]).length+"件");const m={};(data||[]).forEach(r=>{m[r.reservation_id]={category:r.category||"売上",payStatus:r.pay_status||"未完了",sendDate:r.send_date||"",refundDate:r.refund_date||"",content:r.content||"",linkUrl:r.link_url||"",adjustedPrice:r.adjusted_price||""};});DB.jalanPayLsSave(m);return m;},
   async saveJalanPayment(resId,d){DB.jalanPayLsSave({...DB.jalanPayLsLoad(),[resId]:d});if(!sb)return;const row={reservation_id:resId,category:d.category||"売上",pay_status:d.payStatus||"未完了",send_date:d.sendDate||"",refund_date:d.refundDate||"",content:d.content||"",link_url:d.linkUrl||"",adjusted_price:d.adjustedPrice||""};const{error}=await sb.from("tkm_jalan_payment").upsert(row,{onConflict:"reservation_id"});if(error)dbLog("saveJalanPay",false,error.message);else dbLog("saveJalanPay",true,resId);},
+  // --- tkm_jalan_payments (新テーブル・GAS連携) ---
+  async fetchJalanPayments(){
+    if(!sb)return[];
+    const{data,error}=await sb.from("tkm_jalan_payments").select("*").order("created_at",{ascending:false});
+    if(error){dbLog("fetchJalanPayments",false,error.message);return[];}
+    dbLog("fetchJalanPayments",true,(data||[]).length+"件");
+    return data||[];
+  },
+  async updateJalanPaymentMemo(id,memo){
+    if(!sb)return;
+    const{error}=await sb.from("tkm_jalan_payments").update({memo}).eq("id",id);
+    if(error)dbLog("updateJPMemo",false,error.message);
+  },
   // --- 会計（現金出納帳＋予約外売上） ---
   _acctLsKey:"tkm_accounting",
   _acctLsLoad(){try{return JSON.parse(localStorage.getItem(DB._acctLsKey)||"[]");}catch(e){return[];}},
@@ -1699,6 +1712,30 @@ function AccountingPanel({staff,onSynced}){
 }
 
 /* ==========================================
+   じゃらん決済ウィジェット（TOP用）
+   ========================================== */
+function JalanPaymentWidget({data,jalanPay,onGoJalan}){
+  const[jpNew,setJpNew]=useState([]);
+  useEffect(()=>{(async()=>{try{const d=await DB.fetchJalanPayments();setJpNew(d);}catch(e){}})();},[]);
+  const counts={};jpNew.forEach(p=>{counts[p.status]=(counts[p.status]||0)+1;});
+  const total=jpNew.length;
+  const needAction=(counts.new||0)+(counts.link_created||0)+(counts.email_sent||0);
+  if(total===0)return null;
+  return <div onClick={onGoJalan} style={{marginBottom:8,padding:"12px 14px",borderRadius:12,background:"linear-gradient(135deg,#fdf2f8,#fce7f3)",border:"1px solid #fbcfe8",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:18}}>💳</span>
+        <div>
+          <div style={{fontSize:12,fontWeight:800,color:"#9d174d"}}>じゃらん事前決済</div>
+          <div style={{fontSize:10,color:"#be185d"}}>{total}件 / 入金済{counts.paid||0}件</div>
+        </div>
+      </div>
+      {needAction>0&&<span style={{padding:"4px 10px",borderRadius:8,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,animation:"pulse 2s infinite"}}>{needAction}件 要対応</span>}
+    </div>
+  </div>;
+}
+
+/* ==========================================
    直近予約変動ウィジェット（TOP画面用）
    ========================================== */
 function TopRecentWidget(){
@@ -1817,7 +1854,6 @@ function SquareInvoiceWidget(){
   const filtered=filter==="unpaid"?unpaid:filter==="paid"?paid:invoices;
   if(loading)return null;
   if(error)return <div style={{marginBottom:8,padding:"10px 14px",borderRadius:12,background:"#fef2f2",border:"1px solid #fecaca",fontSize:11,color:"#dc2626"}}>💳 Square請求書の取得に失敗: {error}</div>;
-  if(!invoices.length)return null;
   return <div style={{marginBottom:8}}>
     <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:unpaid.length>0?"#fffbeb":"#f0fdf4",border:"1px solid "+(unpaid.length>0?"#fde68a":"#bbf7d0"),cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
       <span style={{fontSize:16}}>💳</span>
@@ -7273,6 +7309,88 @@ function PASGuard({children,label}){
    じゃらん決済確認
    ========================================== */
 function JalanPayment({data,jalanPay,onJalanPayChange}){
+  const[viewTab,setViewTab]=useState("new");
+  return <div style={{maxWidth:900,margin:"0 auto"}}>
+    <div style={{display:"flex",gap:8,marginBottom:12}}>
+      <button onClick={()=>setViewTab("new")} style={{padding:"6px 16px",borderRadius:8,border:viewTab==="new"?"2px solid #2563eb":"1px solid #d1d5db",background:viewTab==="new"?"#eff6ff":"#fff",color:viewTab==="new"?"#1d4ed8":"#64748b",fontSize:12,fontWeight:700,cursor:"pointer"}}>新システム</button>
+      <button onClick={()=>setViewTab("legacy")} style={{padding:"6px 16px",borderRadius:8,border:viewTab==="legacy"?"2px solid #f59e0b":"1px solid #d1d5db",background:viewTab==="legacy"?"#fffbeb":"#fff",color:viewTab==="legacy"?"#92400e":"#64748b",fontSize:12,fontWeight:700,cursor:"pointer"}}>旧データ（消し込み用）</button>
+    </div>
+    {viewTab==="new"?<JalanPaymentNew/>:<JalanPaymentLegacy data={data} jalanPay={jalanPay} onJalanPayChange={onJalanPayChange}/>}
+  </div>;
+}
+
+function JalanPaymentNew(){
+  const[payments,setPayments]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[filter,setFilter]=useState("all");
+  const[editMemoId,setEditMemoId]=useState(null);
+  const[memoText,setMemoText]=useState("");
+  const load=async()=>{const d=await DB.fetchJalanPayments();setPayments(d);setLoading(false);};
+  useEffect(()=>{load();},[]);
+  useEffect(()=>{
+    const onVis=()=>{if(document.visibilityState==="visible")load();};
+    document.addEventListener("visibilitychange",onVis);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")load();},30000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
+  },[]);
+  const statusMeta={
+    new:{label:"新規",bg:"#f1f5f9",c:"#475569"},
+    link_created:{label:"リンク作成済",bg:"#dbeafe",c:"#1d4ed8"},
+    email_sent:{label:"メール送信済",bg:"#fef3c7",c:"#92400e"},
+    paid:{label:"入金済",bg:"#dcfce7",c:"#166534"},
+    cancelled:{label:"キャンセル",bg:"#fef2f2",c:"#dc2626"},
+    refund:{label:"返金待ち",bg:"#ffedd5",c:"#c2410c"},
+    refunded:{label:"返金済",bg:"#f3e8ff",c:"#7c3aed"}
+  };
+  const filtered=filter==="all"?payments:payments.filter(p=>p.status===filter);
+  const counts={};payments.forEach(p=>{counts[p.status]=(counts[p.status]||0)+1;});
+  const saveMemo=async(id)=>{await DB.updateJalanPaymentMemo(id,memoText);setEditMemoId(null);load();};
+  const cardS={background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+  if(loading)return <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>読込中...</div>;
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+      <h3 style={{fontSize:16,fontWeight:800,margin:0}}>じゃらん事前決済</h3>
+      <div style={{display:"flex",gap:6,fontSize:10,fontWeight:700}}>
+        <span style={{padding:"2px 8px",borderRadius:8,background:"#dcfce7",color:"#166534"}}>入金済 {counts.paid||0}</span>
+        <span style={{padding:"2px 8px",borderRadius:8,background:"#fef3c7",color:"#92400e"}}>処理中 {(counts.new||0)+(counts.link_created||0)+(counts.email_sent||0)}</span>
+        <span style={{padding:"2px 8px",borderRadius:8,background:"#fef2f2",color:"#dc2626"}}>CXL {(counts.cancelled||0)+(counts.refund||0)+(counts.refunded||0)}</span>
+      </div>
+    </div>
+    <div style={{display:"flex",gap:4,marginBottom:10,flexWrap:"wrap"}}>
+      {[{k:"all",l:"全て("+payments.length+")"},...Object.entries(statusMeta).map(([k,v])=>({k,l:v.label+"("+(counts[k]||0)+")"}))].map(f=>
+        <button key={f.k} onClick={()=>setFilter(f.k)} style={{padding:"3px 10px",borderRadius:6,border:filter===f.k?"2px solid #2563eb":"1px solid #d1d5db",background:filter===f.k?"#eff6ff":"#fff",fontSize:10,fontWeight:600,cursor:"pointer",color:filter===f.k?"#1d4ed8":"#64748b"}}>{f.l}</button>
+      )}
+    </div>
+    {filtered.length===0?<div style={{...cardS,padding:24,textAlign:"center",color:"#94a3b8",fontSize:13}}>該当データなし</div>:
+    <div style={{...cardS,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+      <thead><tr style={{background:"#f8fafc"}}>
+        {["予約番号","顧客名","金額","ステータス","Squareリンク","利用期間","作成日","メモ"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#475569",borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap"}}>{h}</th>)}
+      </tr></thead>
+      <tbody>{filtered.map(p=>{
+        const sm=statusMeta[p.status]||statusMeta.new;
+        return <tr key={p.id} style={{borderBottom:"1px solid #f1f5f9"}}>
+          <td style={{padding:"4px 8px",fontFamily:"monospace",fontSize:10,fontWeight:600}}>{p.reservation_id}</td>
+          <td style={{padding:"4px 8px",fontWeight:600}}>{p.customer_name||"-"}</td>
+          <td style={{padding:"4px 8px",fontWeight:700,color:"#1e40af"}}>{"\u00A5"}{(p.amount||0).toLocaleString()}</td>
+          <td style={{padding:"4px 8px"}}><span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:4,background:sm.bg,color:sm.c}}>{sm.label}</span></td>
+          <td style={{padding:"4px 8px",fontSize:10}}>{p.square_payment_url?<a href={p.square_payment_url} target="_blank" rel="noreferrer" style={{color:"#2563eb"}}>リンク</a>:"-"}</td>
+          <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.lend_date||"-"}{p.lend_date&&p.return_date?" ~ ":""}{p.return_date||""}{(()=>{
+            if(!p.lend_date||["paid","cancelled","refund","refunded"].includes(p.status))return null;
+            const ld=new Date(p.lend_date+"T00:00:00");const now=new Date();
+            const days=Math.ceil((ld-new Date(now.getFullYear(),now.getMonth(),now.getDate()))/86400000);
+            const c=days<=3?"#dc2626":days<=7?"#d97706":"#64748b";
+            const bg=days<=3?"#fee2e2":days<=7?"#fef3c7":"#f1f5f9";
+            return <span style={{marginLeft:4,fontSize:8,fontWeight:700,color:c,background:bg,padding:"1px 5px",borderRadius:4}}>{days<=0?"🚨当日/超過":"あと"+days+"日"}</span>;
+          })()}</td>
+          <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.created_at?new Date(p.created_at).toLocaleDateString("ja-JP"):"-"}</td>
+          <td style={{padding:"4px 8px",fontSize:10}}>{editMemoId===p.id?<div style={{display:"flex",gap:4}}><input value={memoText} onChange={e=>setMemoText(e.target.value)} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:100}}/><button onClick={()=>saveMemo(p.id)} style={{fontSize:9,padding:"2px 6px",borderRadius:4,border:"none",background:"#2563eb",color:"#fff",cursor:"pointer"}}>保存</button><button onClick={()=>setEditMemoId(null)} style={{fontSize:9,padding:"2px 6px",borderRadius:4,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer"}}>x</button></div>:<span onClick={()=>{setEditMemoId(p.id);setMemoText(p.memo||"");}} style={{cursor:"pointer",color:p.memo?"#1e293b":"#94a3b8"}}>{p.memo||"クリックで入力"}</span>}</td>
+        </tr>;
+      })}</tbody>
+    </table></div></div>}
+  </div>;
+}
+
+function JalanPaymentLegacy({data,jalanPay,onJalanPayChange}){
   const[editId,setEditId]=useState(null);
   const[form,setForm]=useState({});
   const[sheetLoading,setSheetLoading]=useState(false);
@@ -13346,6 +13464,7 @@ function App(){
               <LeadTimeWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               <ExtraUnpaidWidget/>
               <TopRecentWidget/>
+              <JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab("jalanpay")}/>
               <SquareInvoiceWidget/>
               {/* ===== 問い合わせ / 車両チェック ===== */}
               <div style={{display:"flex",gap:8,marginBottom:8}}>
