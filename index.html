@@ -79,7 +79,7 @@ if('serviceWorker' in navigator){
   }).then(function(keys){
     return Promise.all(keys.map(function(k){return caches.delete(k);}));
   }).then(function(){
-    navigator.serviceWorker.register('/sw.js?v=8');
+    navigator.serviceWorker.register('/sw.js?v=9');
   }).catch(function(){});
 }
 // キャッシュクリア
@@ -129,6 +129,6 @@ window.loadXlsx=function(){
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
 <script>splashMsg('アプリ準備中...');</script>
-<script src="/app.js?v=107"></script>
+<script src="/app.js?v=108"></script>
 </body>
 </html>

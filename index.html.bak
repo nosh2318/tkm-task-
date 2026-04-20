@@ -9266,7 +9266,7 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,onReservationUpdate,maintenance}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,jalanPayNew,onReservationUpdate,maintenance}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const[opView,setOpView]=useState("summary"); // ★ 表示切替: "summary" | "bus" | "hia" | "tasks" | "wash" | "master"
   const[washAddCat,setWashAddCat]=useState("");const[washAddVc,setWashAddVc]=useState("");const[washAddTime,setWashAddTime]=useState("");const[washAddMemo,setWashAddMemo]=useState("");
@@ -10553,11 +10553,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         };
         const renderTaskChip=(t)=>{
           const ppl=parseInt(t.people)||1;
+          const jpBadge=(()=>{if(t.ota!=="J"||!(t.type==="DEL"||t.type==="PU"||t.type==="PUB"))return null;const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");return isPaid?<span style={{fontSize:isMob?8:6,fontWeight:700,color:"#fff",background:"#059669",padding:"0px 3px",borderRadius:2}}>済</span>:<span style={{fontSize:isMob?8:6,fontWeight:700,color:"#fff",background:"#dc2626",padding:"0px 3px",borderRadius:2}}>未</span>;})();
           return <div key={t._id} onClick={()=>setResDetailPopup(t)} style={{display:"inline-flex",alignItems:"center",gap:isMob?4:2,padding:isMob?"4px 8px":"2px 6px",margin:isMob?"2px 0":"1px 2px",borderRadius:6,background:t.done?"#f1f5f9":"#fff",border:"1px solid "+(t.done?"#e2e8f0":"#cbd5e1"),opacity:t.done?0.5:1,fontSize:isMob?11:9,cursor:"pointer"}}>
             <span style={{color:"#dc2626",fontSize:isMob?9:7,fontWeight:600}}>{t.reservationId||""}</span>
             <span style={{fontWeight:700,color:"#1e293b"}}>{t.name}</span>
             <span style={{color:"#7c3aed",fontWeight:800,fontSize:isMob?10:8}}>{ppl}</span>
             {t.flight&&<span style={{color:"#2563eb",fontSize:isMob?9:7}}>✈{t.flight}</span>}
+            {jpBadge}
           </div>;
         };
         return <div style={{padding:isMob?4:8}}>
@@ -10792,10 +10794,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   <span style={{fontSize:10,fontWeight:700,color:doneC===taskList.length?"#22c55e":"#64748b"}}>完了 {doneC}/{taskList.length}</span>
                 </div>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}><thead><tr style={{background:"#f8fafc"}}>
-                  {["✓","担当","時間","内容","予約者","人数","車種","No.","場所","メモ",showTypeToggle?"変更":""].filter(Boolean).map((h,i)=><th key={i} style={{padding:"4px 6px",textAlign:"left",fontWeight:600,fontSize:9,color:"#475569",borderBottom:"1px solid #e2e8f0"}}>{h}</th>)}
+                  {["✓","担当","時間","内容","予約者","人数","車種","No.","場所","決済","メモ",showTypeToggle?"変更":""].filter(Boolean).map((h,i)=><th key={i} style={{padding:"4px 6px",textAlign:"left",fontWeight:600,fontSize:9,color:"#475569",borderBottom:"1px solid #e2e8f0"}}>{h}</th>)}
                 </tr></thead><tbody>
                   {taskList.map((t,i)=>{
                     const tm2=TASK_META[t.type]||TASK_META["その他"];
+                    const jpBadgeSec=(()=>{if(t.ota!=="J"||!(t.type==="DEL"||t.type==="PU"||t.type==="PUB"))return <span style={{color:"#ccc",fontSize:8}}>-</span>;const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");return isPaid?<span style={{fontSize:8,fontWeight:700,color:"#fff",background:"#059669",padding:"1px 4px",borderRadius:3}}>入金済</span>:<span style={{fontSize:8,fontWeight:700,color:"#fff",background:"#dc2626",padding:"1px 4px",borderRadius:3}}>未入金</span>;})();
                     return <tr key={t._id||i} style={{borderBottom:"1px solid #f1f5f9",opacity:t.done?0.5:1}}>
                       <td style={{padding:"4px 6px",textAlign:"center"}}><span style={{cursor:"pointer",fontSize:13}} onClick={()=>{const idx2=tasks.findIndex(x=>x._id===t._id);if(idx2>=0){const u={...tasks[idx2],done:!tasks[idx2].done};upd(idx2,u);}}}>{t.done?"✅":"⬜"}</span></td>
                       <td style={{padding:"4px 6px",fontSize:10,fontWeight:600}}>{t.assignee||"-"}</td>
@@ -10806,6 +10809,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                       <td style={{padding:"4px 6px",fontSize:9}}>{t.vehicle||""}</td>
                       <td style={{padding:"4px 6px",fontSize:9,color:"#64748b"}}>{t.plateNo||""}</td>
                       <td style={{padding:"4px 6px",fontSize:9,color:"#f59e0b"}}>{t.place||""}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center"}}>{jpBadgeSec}</td>
                       <td style={{padding:"4px 6px",fontSize:9,color:"#94a3b8"}}>{t.memo||""}</td>
                       {showTypeToggle&&<td style={{padding:"4px 3px"}}>
                         {t.type==="DEL"&&<button onClick={()=>changeTaskType(t._id,"PU","")} style={{padding:"2px 6px",borderRadius:4,fontSize:8,fontWeight:700,background:"#ecfdf5",color:"#059669",border:"none",cursor:"pointer"}}>→PU</button>}
@@ -11067,7 +11071,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               <td style={{...cellR(16),color:"#475569"}}>{t.memo||""}</td>
               <td style={{...cellR(17),textAlign:"center"}}>{isLend?(t.yakkan?"✓":"-"):""}</td>
               <td style={{...cellR(18),textAlign:"center"}}>{(t.type==="DEL"||t.type==="COL")?(t.line?"✓":"-"):""}</td>
-              <td style={{...cellR(19),textAlign:"center"}}>{isLend?(()=>{const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const pr=Number(jp&&jp.adjustedPrice?jp.adjustedPrice:(srcRes?(srcRes.finalPrice||srcRes.price):0))||0;if(t.ota==="J"){const status=jp&&jp.payStatus==="完了"?<span style={{color:"#059669",fontWeight:700,fontSize:8}}>済</span>:<span style={{color:"#dc2626",fontWeight:700,fontSize:8}}>未</span>;return <span>{pr?<span style={{fontSize:8,fontWeight:700,color:"#1e40af"}}>¥{pr.toLocaleString()}</span>:""}{status}</span>;}return t.payment?"✓":"-";})():""}</td>
+              <td style={{...cellR(19),textAlign:"center"}}>{isLend?(()=>{const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const pr=Number(jp&&jp.adjustedPrice?jp.adjustedPrice:(srcRes?(srcRes.finalPrice||srcRes.price):0))||0;if(t.ota==="J"){const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");const status=isPaid?<span style={{color:"#fff",fontWeight:700,fontSize:7,background:"#059669",padding:"1px 4px",borderRadius:3}}>入金済</span>:<span style={{color:"#fff",fontWeight:700,fontSize:7,background:"#dc2626",padding:"1px 4px",borderRadius:3}}>未入金</span>;return <span style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>{pr?<span style={{fontSize:8,fontWeight:700,color:"#1e40af"}}>¥{pr.toLocaleString()}</span>:""}{status}</span>;}return t.payment?"✓":"-";})():""}</td>
               <td style={cellR(20)}>{isLend?fmtD(t.returnDate):""}</td>
               <td style={cellR(21)}>{isLend?(t.returnTime||""):""}</td>
               <td style={cellR(22)}>{isLend?(t.returnType||""):""}</td>
@@ -12795,7 +12799,7 @@ function App(){
     if(typeof INIT_SHIFTS!=="undefined"&&Object.keys(INIT_SHIFTS).length){DB._shiftsLsSave(INIT_SHIFTS);return INIT_SHIFTS;}
     return {};
   });
-  const[showOP,setShowOP]=useState(false);const[showFloatFleet,setShowFloatFleet]=useState(false);const[floatFleetSize,setFloatFleetSize]=useState("half");const[jalanPay,setJalanPay]=useState({});
+  const[showOP,setShowOP]=useState(false);const[showFloatFleet,setShowFloatFleet]=useState(false);const[floatFleetSize,setFloatFleetSize]=useState("half");const[jalanPay,setJalanPay]=useState({});const[jalanPayNew,setJalanPayNew]=useState({});
   const[staff,setStaff]=useState(()=>{
     const ls=DB._staffLsLoad();
     if(ls&&ls.length)return ls;
@@ -12930,6 +12934,7 @@ function App(){
         (async()=>{
           try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){}
           try{const jpDB=await DB.fetchJalanPayment();if(jpDB)setJalanPay(jpDB);}catch(e){}
+          try{const jpNewArr=await DB.fetchJalanPayments();const jpMap={};(jpNewArr||[]).forEach(r=>{jpMap[r.reservation_id]=r;});setJalanPayNew(jpMap);}catch(e){}
           if(plDB&&Object.keys(plDB).length){
             setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("tkm_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
           }
@@ -13412,7 +13417,7 @@ function App(){
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <BgLoadingBar/>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} onGoFleet={()=>{setShowFloatFleet(f=>!f);}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} maintenance={maintenance} onReservationUpdate={(resId,fields)=>{setData(prev=>{const next=prev.map(r=>r.id===resId?{...r,...fields}:r);/* ★ OPシートタスクにも連動 */const updated=next.find(r=>r.id===resId);if(updated&&Object.keys(fields).some(k=>["delTime","delPlace","colTime","colPlace","insurance","vehicle","name","people","optB","optC","optJ","optUSB"].includes(k))){const syncF={};if(fields.name!==undefined)syncF.name=fields.name;if(fields.people!==undefined)syncF.people=fields.people;if(fields.insurance!==undefined)syncF.insurance=fields.insurance;if(fields.vehicle!==undefined)syncF.vehicle=fields.vehicle;const syncOpts=(fields.optB!==undefined||fields.optC!==undefined||fields.optJ!==undefined||fields.optUSB!==undefined)?{b:+(fields.optB??updated.optB??0),c:+(fields.optC??updated.optC??0),j:+(fields.optJ??updated.optJ??0),usb:+(fields.optUSB??updated.optUSB??0)}:null;const _syncT=async(d)=>{if(!d)return;const tks=await DB.fetchTasks(d);if(!tks||!tks.length)return;const upd=tks.map(tk=>{if(tk.reservationId!==resId)return tk;const u={...tk};if(syncF.name!==undefined)u.name=syncF.name;if(syncF.people!==undefined)u.people=syncF.people;if(syncF.insurance!==undefined)u.insurance=syncF.insurance;if(syncF.vehicle!==undefined)u.vehicle=syncF.vehicle;if(syncOpts)u.opts=syncOpts;if((tk.type==="DEL"||tk.type==="PU"||tk.type==="PUB")&&tk._timeChangeSource!=="manual"&&fields.delTime!==undefined)u.time=fields.delTime;if((tk.type==="DEL"||tk.type==="PU"||tk.type==="PUB")&&tk._placeSource!=="manual"&&fields.delPlace!==undefined)u.place=fields.delPlace;if((tk.type==="COL"||tk.type==="BD"||tk.type==="BDB")&&tk._timeChangeSource!=="manual"&&fields.colTime!==undefined)u.time=fields.colTime;if((tk.type==="COL"||tk.type==="BD"||tk.type==="BDB")&&tk._placeSource!=="manual"&&fields.colPlace!==undefined)u.place=fields.colPlace;return u;});if(JSON.stringify(upd)!==JSON.stringify(tks))DB.upsertTasks(upd,d);};try{const ld=norm(updated.lendDate),rd=norm(updated.returnDate);_syncT(ld);if(rd!==ld)_syncT(rd);}catch(e){console.error("[resUpdate→tasks sync]",e);}}return next;});}}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} onGoFleet={()=>{setShowFloatFleet(f=>!f);}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} jalanPayNew={jalanPayNew} maintenance={maintenance} onReservationUpdate={(resId,fields)=>{setData(prev=>{const next=prev.map(r=>r.id===resId?{...r,...fields}:r);/* ★ OPシートタスクにも連動 */const updated=next.find(r=>r.id===resId);if(updated&&Object.keys(fields).some(k=>["delTime","delPlace","colTime","colPlace","insurance","vehicle","name","people","optB","optC","optJ","optUSB"].includes(k))){const syncF={};if(fields.name!==undefined)syncF.name=fields.name;if(fields.people!==undefined)syncF.people=fields.people;if(fields.insurance!==undefined)syncF.insurance=fields.insurance;if(fields.vehicle!==undefined)syncF.vehicle=fields.vehicle;const syncOpts=(fields.optB!==undefined||fields.optC!==undefined||fields.optJ!==undefined||fields.optUSB!==undefined)?{b:+(fields.optB??updated.optB??0),c:+(fields.optC??updated.optC??0),j:+(fields.optJ??updated.optJ??0),usb:+(fields.optUSB??updated.optUSB??0)}:null;const _syncT=async(d)=>{if(!d)return;const tks=await DB.fetchTasks(d);if(!tks||!tks.length)return;const upd=tks.map(tk=>{if(tk.reservationId!==resId)return tk;const u={...tk};if(syncF.name!==undefined)u.name=syncF.name;if(syncF.people!==undefined)u.people=syncF.people;if(syncF.insurance!==undefined)u.insurance=syncF.insurance;if(syncF.vehicle!==undefined)u.vehicle=syncF.vehicle;if(syncOpts)u.opts=syncOpts;if((tk.type==="DEL"||tk.type==="PU"||tk.type==="PUB")&&tk._timeChangeSource!=="manual"&&fields.delTime!==undefined)u.time=fields.delTime;if((tk.type==="DEL"||tk.type==="PU"||tk.type==="PUB")&&tk._placeSource!=="manual"&&fields.delPlace!==undefined)u.place=fields.delPlace;if((tk.type==="COL"||tk.type==="BD"||tk.type==="BDB")&&tk._timeChangeSource!=="manual"&&fields.colTime!==undefined)u.time=fields.colTime;if((tk.type==="COL"||tk.type==="BD"||tk.type==="BDB")&&tk._placeSource!=="manual"&&fields.colPlace!==undefined)u.place=fields.colPlace;return u;});if(JSON.stringify(upd)!==JSON.stringify(tks))DB.upsertTasks(upd,d);};try{const ld=norm(updated.lendDate),rd=norm(updated.returnDate);_syncT(ld);if(rd!==ld)_syncT(rd);}catch(e){console.error("[resUpdate→tasks sync]",e);}}return next;});}}/>}
     {/* ★ フローティング配車表パネル（PC専用） */}
     {showFloatFleet&&<div style={{position:"fixed",bottom:0,right:0,width:floatFleetSize==="full"?"100%":"50%",height:floatFleetSize==="full"?"70vh":"45vh",zIndex:250,background:"#fff",borderTop:"3px solid #059669",borderLeft:floatFleetSize!=="full"?"3px solid #059669":"none",boxShadow:"0 -4px 20px rgba(0,0,0,.2)",display:"flex",flexDirection:"column",borderRadius:floatFleetSize==="full"?"12px 12px 0 0":"12px 0 0 0"}}>
       <div style={{display:"flex",alignItems:"center",padding:"6px 12px",background:"#059669",gap:6,flexShrink:0,borderRadius:floatFleetSize==="full"?"9px 9px 0 0":"9px 0 0 0"}}>
@@ -13593,6 +13598,7 @@ function App(){
                     <div style={{flex:1,height:10,borderRadius:5,background:"#e2e8f0",overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:5,background:pct>=100?"#22c55e":pct<50?"#ef4444":color||"#3b82f6",transition:"width .3s"}}></div></div>
                     <span style={{fontSize:11,fontWeight:800,color:pct>=100?"#22c55e":pct<50?"#ef4444":"#3b82f6",whiteSpace:"nowrap"}}>{pct}%</span>
                   </div>;};
+                  const getJalanPayBadge=(t)=>{if(t.ota!=="J"||!(t.type==="DEL"||t.type==="PU"||t.type==="PUB"))return null;const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");return isPaid?<span style={{fontSize:7,fontWeight:700,color:"#fff",background:"#059669",padding:"1px 4px",borderRadius:3}}>入金済</span>:<span style={{fontSize:7,fontWeight:700,color:"#fff",background:"#dc2626",padding:"1px 4px",borderRadius:3}}>未入金</span>;};
                   const rT=(t,i)=><div key={i} style={{fontSize:10,padding:"3px 0",borderBottom:"1px solid #f1f5f9",display:"flex",gap:6,alignItems:"center",opacity:t.done?0.45:1}}>
                     <span style={{fontSize:12,width:16,textAlign:"center"}}>{t.done?"✅":"⬜"}</span>
                     <span style={{padding:"1px 5px",borderRadius:4,fontSize:8,fontWeight:700,background:(tc[t.type]||"#64748b")+"18",color:tc[t.type]||"#64748b"}}>{t.type}</span>
@@ -13600,6 +13606,7 @@ function App(){
                     <span style={{fontWeight:600,fontSize:10,textDecoration:t.done?"line-through":"none",color:t.done?"#94a3b8":"#1e293b"}}>{t.name}</span>
                     <span style={{color:"#94a3b8",fontSize:9}}>{t.plateNo||""}</span>
                     {t.place&&<span style={{color:"#f59e0b",fontSize:8}}>📍{t.place}</span>}
+                    {getJalanPayBadge(t)}
                   </div>;
                   const doneCount=dbTasks.filter(t=>t.done).length;
                   const totalWork=dbTasks.length;
@@ -13704,6 +13711,7 @@ function App(){
                     <div style={{flex:1,height:10,borderRadius:5,background:"#e2e8f0",overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:5,background:pct>=100?"#22c55e":pct<50?"#ef4444":color||"#f59e0b",transition:"width .3s"}}></div></div>
                     <span style={{fontSize:11,fontWeight:800,color:pct>=100?"#22c55e":pct<50?"#ef4444":"#f59e0b",whiteSpace:"nowrap"}}>{pct}%</span>
                   </div>;};
+                  const getJalanPayBadge2=(t)=>{if(t.ota!=="J"||!(t.type==="DEL"||t.type==="PU"||t.type==="PUB"))return null;const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");return isPaid?<span style={{fontSize:7,fontWeight:700,color:"#fff",background:"#059669",padding:"1px 4px",borderRadius:3}}>入金済</span>:<span style={{fontSize:7,fontWeight:700,color:"#fff",background:"#dc2626",padding:"1px 4px",borderRadius:3}}>未入金</span>;};
                   const rT=(t,i)=><div key={i} style={{fontSize:10,padding:"3px 0",borderBottom:"1px solid #f1f5f9",display:"flex",gap:6,alignItems:"center",opacity:t.done?0.45:1}}>
                     <span style={{fontSize:12,width:16,textAlign:"center"}}>{t.done?"✅":"⬜"}</span>
                     <span style={{padding:"1px 5px",borderRadius:4,fontSize:8,fontWeight:700,background:(tc[t.type]||"#64748b")+"18",color:tc[t.type]||"#64748b"}}>{t.type}</span>
@@ -13711,6 +13719,7 @@ function App(){
                     <span style={{fontWeight:600,fontSize:10,textDecoration:t.done?"line-through":"none",color:t.done?"#94a3b8":"#1e293b"}}>{t.name}</span>
                     <span style={{color:"#94a3b8",fontSize:9}}>{t.plateNo||""}</span>
                     {t.place&&<span style={{color:"#f59e0b",fontSize:8}}>📍{t.place}</span>}
+                    {getJalanPayBadge2(t)}
                   </div>;
                   const totalWork=dbTasks.length;
                   const doneCount=dbTasks.filter(t=>t.done).length;
@@ -13930,6 +13939,7 @@ function App(){
                           {ppl>0&&<span style={{fontSize:10,fontWeight:700,color:"#7c3aed"}}>{ppl}名</span>}
                           {t.assignee&&<span style={{fontSize:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 5px",borderRadius:3}}>👤{t.assignee}</span>}
                           {t.done&&<span>✅</span>}
+                          {(()=>{if(t.ota!=="J"||!(t.type==="DEL"||t.type==="PU"||t.type==="PUB"))return null;const jpNew=t.reservationId&&jalanPayNew?jalanPayNew[t.reservationId]:null;const jp=t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;const isPaid=jpNew?jpNew.status==="paid":(jp&&jp.payStatus==="完了");return isPaid?<span style={{fontSize:8,fontWeight:700,color:"#fff",background:"#059669",padding:"1px 5px",borderRadius:3}}>入金済</span>:<span style={{fontSize:8,fontWeight:700,color:"#fff",background:"#dc2626",padding:"1px 5px",borderRadius:3,animation:"blink 1.5s infinite"}}>未入金</span>;})()}
                         </div>
                       </div>;
                     })}

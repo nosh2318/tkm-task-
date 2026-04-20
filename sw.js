@@ -1,4 +1,4 @@
-var CACHE_NAME = 'tkm-v8';
+var CACHE_NAME = 'tkm-v9';
 var URLS = ['/', '/index.html', '/app.js'];
 var CDN_CACHE = 'tkm-cdn-v1';
 var CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];

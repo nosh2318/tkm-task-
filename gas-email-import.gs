@@ -1,24 +1,23 @@
 // ============================================================
 // GAS - Reservation Email Import & Vehicle Auto-Assignment
-// Gmail: reserve@rent-handyman.jp
-// Target: 那覇空港 (NHA) store only
-// OTA: 楽天(R), じゃらん(J), skyticket(S), エアトリ(O), オフィシャル(HP)
+// Gmail: (メールアドレス未定)
+// Target: 高松 (TKM) store only — BUDDICA
+// OTA: 楽天(R), じゃらん(J), skyticket(S), エアトリ(O), HP, GoGoOut(G), レンタカードットコム(RC)
 // ============================================================
 
-// --- Config (ScriptProperties から取得) ---
-var LABEL_NAME = 'processed_naha';
+// --- Supabase Config (ScriptProperties経由) ---
+var LABEL_NAME = 'processed_takamatsu';
 function getSupabaseUrl_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_URL'); }
 function getSupabaseKey_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); }
 function getSlackEmail_() { return PropertiesService.getScriptProperties().getProperty('SLACK_EMAIL'); }
 
-// 初回セットアップ用（1回だけ実行）
 function setupProperties() {
   PropertiesService.getScriptProperties().setProperties({
-    'SUPABASE_URL': 'https://ckrxttbnawkclshczsia.supabase.co',
+    'SUPABASE_URL': 'https://iuxsjjyfzjyohqvnaxei.supabase.co',
     'SUPABASE_KEY': '<SERVICE_ROLE_KEYをSupabase Dashboard > Settings > APIから取得して入力>',
-    'SLACK_EMAIL': 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com'
+    'SLACK_EMAIL': '<高松店用Slackチャンネルのメールアドレスを入力>'
   });
-  Logger.log('✅ Properties set. setupProperties内のハードコード値を削除してください。');
+  Logger.log('Properties set.');
 }
 
 // --- OTA sender definitions ---
@@ -28,7 +27,10 @@ var OTA_SENDERS = {
   skyticket: 'rentacar@skyticket.com',
   airtrip:   'info@rentacar-mail.airtrip.jp',
   airtrip_dp: 'info@skygate.co.jp',
-  official:  'noreply@rent-handyman.jp'
+  official:  'noreply@rent-handyman.jp',
+  gogoout:   'service@gogoout.com',
+  rentacar_dc: 'info@rentacar.com',
+  rentacar_dc2: 'info@web-rentacar.com'
 };
 
 // --- OTA reservation subject patterns ---
@@ -38,11 +40,14 @@ var OTA_RESERVE_SUBJECTS = {
   skyticket: '【skyticket】 新規予約',
   airtrip:   '【予約確定】エアトリレンタカー',
   airtrip_dp: '【予約確定】エアトリプラス',
-  official:  'ご予約完了のお知らせ'
+  official:  'ご予約完了のお知らせ',
+  gogoout:   'gogoout - 予約のお知らせ',
+  rentacar_dc: '予約登録のお知らせ',
+  rentacar_dc2: '予約登録のお知らせ'
 };
 
 // --- Cancellation keywords in subject ---
-var CANCEL_KEYWORDS = ['予約キャンセル受付', 'キャンセル'];
+var CANCEL_KEYWORDS = ['予約キャンセル受付', 'キャンセル', 'cancellation', 'cancelled'];
 
 // ============================================================
 // Setup & Trigger
@@ -67,9 +72,19 @@ function setup() {
 // Main Entry Points
 // ============================================================
 function processNewEmails() {
+  var SUPABASE_URL = getSupabaseUrl_();
+  var SUPABASE_KEY = getSupabaseKey_();
+  var SLACK_EMAIL = getSlackEmail_();
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    Logger.log('ERROR: SUPABASE_URL or SUPABASE_KEY not set. Run setupProperties() first.');
+    return;
+  }
+
   var label = getOrCreateLabel_(LABEL_NAME);
   var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
-  var query = '(' + fromClause + ') -label:' + LABEL_NAME + ' -label:処理済み newer_than:2d';
+  // ラベルでフィルタしない（キャンセルメールが同スレッドに来てもスキップされない）
+  // 代わりにメッセージID単位で処理済み管理する
+  var query = '(' + fromClause + ') newer_than:2d';
 
   var threads = GmailApp.search(query, 0, 50);
   if (threads.length === 0) {
@@ -77,7 +92,19 @@ function processNewEmails() {
     return;
   }
 
-  Logger.log('Found ' + threads.length + ' thread(s) to process.');
+  Logger.log('Found ' + threads.length + ' thread(s) to scan.');
+
+  // メッセージID単位の処理済みセットを取得
+  var processedMsgIds = getProcessedMsgIds_();
+  var now = Date.now();
+  // 3日以上前のエントリを削除（PropertiesServiceサイズ制限対策）
+  var THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+  var pruneKeys = Object.keys(processedMsgIds);
+  for (var p = 0; p < pruneKeys.length; p++) {
+    if (now - processedMsgIds[pruneKeys[p]] > THREE_DAYS_MS) {
+      delete processedMsgIds[pruneKeys[p]];
+    }
+  }
 
   var successes = [];
   var failures = [];
@@ -96,6 +123,13 @@ function processNewEmails() {
 
   var labeledThreads = {};
   for (var i = 0; i < allMessages.length; i++) {
+    var msgId = allMessages[i].msg.getId();
+
+    // メッセージID単位でスキップ（ラベルではなくIDで判定）
+    if (processedMsgIds[msgId]) {
+      continue;
+    }
+
     try {
       var result = processMessage_(allMessages[i].msg, false);
       if (result) {
@@ -105,9 +139,14 @@ function processNewEmails() {
         else if (result.type === 'skip') skipped.push(result);
       }
     } catch (e) {
-      Logger.log('ERROR processing message ID ' + allMessages[i].msg.getId() + ': ' + e.message + '\n' + e.stack);
+      Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
       failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
     }
+
+    // 処理結果に関わらずメッセージIDを記録（二重処理防止）
+    processedMsgIds[msgId] = now;
+
+    // ラベルは視覚目印として付与（機能的ゲートキーパーではない）
     var tid = allMessages[i].thread.getId();
     if (!labeledThreads[tid]) {
       allMessages[i].thread.addLabel(label);
@@ -115,12 +154,15 @@ function processNewEmails() {
     }
   }
 
+  // 処理済みメッセージIDを保存
+  saveProcessedMsgIds_(processedMsgIds);
+
   if (successes.length > 0) sendSlackSuccess_(successes);
   if (failures.length > 0) sendSlackFailure_(failures);
   if (cancellations.length > 0) sendSlackCancel_(cancellations);
 
   // ハートビート: 実行完了をDBに記録
-  updateHeartbeat_('nha_gas_email', {
+  updateHeartbeat_('tkm_gas_email', {
     success: successes.length,
     failure: failures.length,
     cancel: cancellations.length,
@@ -170,23 +212,24 @@ function processMessage_(message, dryRun) {
   }
   if (!ota) return null;
 
-  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O',airtrip_dp:'O',official:'HP'}[ota] || ota;
+  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O',airtrip_dp:'O',official:'HP',gogoout:'G',rentacar_dc:'RC',rentacar_dc2:'RC'}[ota] || ota;
 
   // Check for cancellation
   var isCancellation = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
 
   if (isCancellation) {
-    // キャンセル: DB存在チェック（札幌の予約はDBにあっても那覇GASでは処理しない）
+    // キャンセル: DB存在チェック（1回のDB呼出しで判定）
     var tmpId = (ota === 'rakuten') ? extractField_(body, '・予約番号') : extractField_(body, '予約番号');
-    if (tmpId && !reservationExists_(tmpId)) {
-      Logger.log('Skipping cancel (not in NHA DB): ' + tmpId);
-      return {type:'skip', id:tmpId, reason:'DB未登録(札幌)'};
-    }
-    // 既にキャンセル済みならスキップ（二重CXL防止）
-    var existingCxl = tmpId ? reservationExists_(tmpId) : null;
-    if (existingCxl && existingCxl.status === 'cancelled') {
-      Logger.log('Already cancelled: ' + tmpId);
-      return {type:'skip', id:tmpId, reason:'既にキャンセル済み'};
+    if (tmpId) {
+      var existing = reservationExists_(tmpId);
+      if (!existing) {
+        Logger.log('Skipping cancel (not in TKM DB): ' + tmpId);
+        return {type:'skip', id:tmpId, reason:'DB未登録(他店)'};
+      }
+      if (existing.status === 'cancelled') {
+        Logger.log('Already cancelled: ' + tmpId);
+        return {type:'skip', id:tmpId, reason:'既にキャンセル済み'};
+      }
     }
     var cancelId = handleCancellation_(ota, body, dryRun);
     return cancelId ? {type:'cancel', id:cancelId, ota:otaCode} : null;
@@ -207,6 +250,9 @@ function processMessage_(message, dryRun) {
     case 'airtrip':    reservation = parseAirtrip_(body); break;
     case 'airtrip_dp': reservation = parseAirtrip_(body); break;
     case 'official':   reservation = parseOfficial_(body); break;
+    case 'gogoout':    reservation = parseGogoout_(body); break;
+    case 'rentacar_dc': reservation = parseRentacarDC_(body); break;
+    case 'rentacar_dc2': reservation = parseRentacarDC_(body); break;
   }
 
   if (!reservation) {
@@ -214,11 +260,14 @@ function processMessage_(message, dryRun) {
     return {type:'failure', id:'不明', ota:otaCode, name:'', reason:'パース失敗'};
   }
 
-  // Filter: 那覇 only
-  if (!isNahaReservation_(reservation)) {
-    Logger.log('Skipping non-Naha: ' + reservation.id +
+  // メール受信日時を予約日時として記録（LT計算の正確性のため）
+  reservation._booked_at = message.getDate().toISOString();
+
+  // Filter: 高松 only
+  if (!isTakamatsuReservation_(reservation)) {
+    Logger.log('Skipping non-Takamatsu: ' + reservation.id +
       ' (store=' + (reservation._store || '') + ', rawClass=' + (reservation._rawClass || '') + ')');
-    return {type:'skip', id:reservation.id, reason:'札幌店'};
+    return {type:'skip', id:reservation.id, reason:'他店舗'};
   }
 
   Logger.log('Parsed: ' + reservation.id + ' (' + reservation.ota + ') ' +
@@ -254,18 +303,26 @@ function processMessage_(message, dryRun) {
 
   // Auto-assign vehicle
   var assigned = autoAssignVehicle_(reservation);
-  if (assigned && assigned._preferredModelUnavailable) {
-    // 指定車種が空いていない → 未配車（別車種にフォールバックしない）
-    return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name,
-      reason:'⚠ 指定車種「' + assigned.preferredModel + '」空車なし（' + reservation.vehicle + 'クラス他車種あり・手動配車必要）',
-      dates:reservation.lend_date+'~'+reservation.return_date};
-  } else if (assigned) {
+
+  // じゃらん事前決済: 予約登録成功後にSquareリンク作成→Slack→スプシ
+  if (reservation.ota === 'J' && reservation.price > 0) {
+    try {
+      handleJalanPayment_(reservation);
+    } catch (e) {
+      Logger.log('[JalanPayment] Error: ' + e.message);
+    }
+  }
+
+  if (assigned) {
     return {type:'success', id:reservation.id, ota:otaCode, name:reservation.name,
       dates:reservation.lend_date+'~'+reservation.return_date,
       vehicle:reservation.vehicle, assignedTo:assigned.name+' ('+assigned.plate_no+')'};
   } else {
+    var failReason = reservation._vehicleModel
+      ? '車種指定「' + reservation._vehicleModel + '」空車なし（' + reservation.vehicle + 'クラス）'
+      : '配車不可（' + reservation.vehicle + 'クラス空車なし）';
     return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name,
-      reason:'配車不可（'+reservation.vehicle+'クラス空車なし）',
+      reason:failReason,
       dates:reservation.lend_date+'~'+reservation.return_date};
   }
 }
@@ -273,40 +330,35 @@ function processMessage_(message, dryRun) {
 // ============================================================
 // Store / Class Filter
 // ============================================================
-function isNahaReservation_(res) {
+function isTakamatsuReservation_(res) {
   var store = res._store || '';
   var rawClass = res._rawClass || '';
   var address = res._address || '';
   var delPlace = res.del_place || '';
   var colPlace = res.col_place || '';
 
-  // 住所判定: 沖縄 → true, 北海道 → false
-  if (/沖縄県|那覇市|沖縄/.test(address)) return true;
-  if (/北海道|札幌市/.test(address)) return false;
+  // 住所判定: 香川県/高松 → true
+  if (/香川県|高松市|高松/.test(address)) return true;
+  if (/沖縄県|那覇|北海道|札幌/.test(address)) return false;
 
-  // 営業所名判定: 那覇 → true, 札幌 → false
-  if (store.indexOf('那覇') !== -1 || store.indexOf('沖縄') !== -1) return true;
-  if (store.indexOf('札幌') !== -1) return false;
+  // 営業所名判定
+  if (store.indexOf('高松') !== -1 || store.indexOf('香川') !== -1) return true;
+  if (store.indexOf('那覇') !== -1 || store.indexOf('札幌') !== -1) return false;
 
-  // お届け/回収場所判定（HP予約で_storeが空の場合に有効）
-  if (/那覇|沖縄|豊見城|宜野湾|浦添|北谷/.test(delPlace + colPlace)) return true;
-  if (/札幌|千歳|北海道/.test(delPlace + colPlace)) return false;
+  // お届け/回収場所判定
+  if (/高松|香川|丸亀|坂出/.test(delPlace + colPlace)) return true;
+  if (/那覇|沖縄|札幌|千歳/.test(delPlace + colPlace)) return false;
 
-  // クラスコード判定: OKA/OKI → true, SPK → false
-  if (/_OKA/i.test(rawClass) || /_OKI/i.test(rawClass)) return true;
-  if (/_SPK/i.test(rawClass)) return false;
+  // クラスコード判定: _TKM → true
+  if (/_TKM/i.test(rawClass)) return true;
+  if (/_OKA|_OKI|_SPK/i.test(rawClass)) return false;
 
-  // 那覇専用クラス（D, A2, B2）なら那覇確定
-  if (res.vehicle === 'D' || res.vehicle === 'A2' || res.vehicle === 'B2') return true;
-
-  // ★ 判定不能 → 那覇として取り込む（札幌GASが除外ロジックを持つため、両方で漏れるリスクを回避）
-  // 札幌GASのisSapporoReservation_でも判定不能→falseなので、どちらにも入らない問題を防ぐ
-  Logger.log('WARNING: Store undetermined, defaulting to NAHA: ' + (res.id || '?') +
-    ' vehicle=' + (res.vehicle || '') + ' store=' + store + ' address=' + address +
-    ' places=' + delPlace + colPlace + ' rawClass=' + rawClass);
+  // 判定不能 → 高松として取り込む（他店GASが除外するため両方で漏れるリスクを回避）
+  Logger.log('WARNING: Store undetermined, defaulting to TAKAMATSU: ' + (res.id || '?'));
   return true;
 }
 
+// TODO: 高松店のクラスが確定したら更新
 function extractVehicleClass_(rawClass) {
   if (!rawClass) return '';
   // A2/B2を先にチェック
@@ -315,8 +367,13 @@ function extractVehicleClass_(rawClass) {
 
   // クラス名 + 車種名 マッピング
   var officialMap = {
-    'アルファードH': 'A', 'アルファード': 'A',
-    'ワンボックスB': 'B', 'ヴェルファイア': 'B', 'セレナ': 'B', 'ヴォクシー': 'B', 'ノア': 'B',
+    'アルファードHクラス': 'A', 'アルファードH': 'A',
+    'アルファードMクラス': 'B', 'アルファードM': 'B',
+    'アルファード': 'A',
+    'ワンボックスB': 'B', 'ヴェルファイア': 'B',
+    'セレナHクラス': 'B', 'セレナH': 'B', 'セレナ': 'B',
+    'ヴォクシー': 'B',
+    'ノアHクラス': 'B', 'ノアH': 'B', 'ノア': 'B',
     'コンパクトSUV': 'C', 'ヤリスクロス': 'C', 'ライズ': 'C',
     'ワンボックスD': 'D', 'エスクァイア': 'D',
     'コンパクト': 'F', 'ヴィッツ': 'F', 'ノート': 'F', 'アクア': 'F',
@@ -362,6 +419,25 @@ function extractField_(body, label) {
   return '';
 }
 
+// --- 補償種類の統一判定 ---
+// 優先度: フル > NOC > 免責 > なし
+// 全OTA共通で使う。メール本文または補償フィールドの文字列を渡す
+function detectInsurance_(text) {
+  if (!text) return 'なし';
+  if (/フルカバー|フル補償|安心フル|あんしんフル/i.test(text)) return 'フル';
+  if (/安心パック|NOC|ノンオペレーション|ノンオペ/i.test(text)) {
+    if (/NOC[補償]*[：:\s]*(なし|未加入|無し|加入しない)/i.test(text)) {
+    } else {
+      return 'NOC';
+    }
+  }
+  if (/レンタカー安心パック[：:\s]*あり/i.test(text)) return 'NOC';
+  if (/免責補償制度\(CDW\)[：:\s]*あり/i.test(text)) return '免責';
+  if (/免責補償[：:\s]*あり|免責補償制度[：:\s]*あり|免責[：:\s]*加入|免責補償料/i.test(text)) return '免責';
+  if (/免責/.test(text) && !/免責[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return '免責';
+  return 'なし';
+}
+
 function parseDateTime_(str) {
   if (!str) return { date: '', time: '' };
   // 2026年4月22日 15:00 or 2026年4月22日 15時00分
@@ -391,10 +467,76 @@ function parseDateTime_(str) {
   return { date: '', time: '' };
 }
 
+/**
+ * 車両名が指定車種に厳密マッチするか判定
+ * 「プリウス」→「プリウス①」OK、「プリウスα①」NG
+ * 「プリウスα」→「プリウスα①」OK、「プリウス①」NG
+ * 「アルファード」→「アルファード①」OK、「アルファードM①」NG
+ */
+function isModelMatch_(vehicleName, preferredModel) {
+  var idx = vehicleName.indexOf(preferredModel);
+  if (idx === -1) return false;
+  // マッチ位置の直後の文字を確認
+  var afterChar = vehicleName.charAt(idx + preferredModel.length);
+  // 直後が空 or 数字 or 丸数字(①-⑳) or スペース → 正しいマッチ
+  // 直後がアルファベットやカタカナ → 別車種（例: プリウス→プリウスα、アルファード→アルファードM）
+  if (!afterChar) return true;  // 完全一致
+  if (/[\d①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳\s\/]/.test(afterChar)) return true;
+  return false;
+}
+
 function padZero_(n) { return ('0' + parseInt(n, 10)).slice(-2); }
 function parsePrice_(str) { if (!str) return 0; return parseInt(str.replace(/[,，円\s]/g, ''), 10) || 0; }
 function cleanPhone_(str) { if (!str) return ''; return str.replace(/[^\d-]/g, '').trim(); }
 function cleanName_(str) { if (!str) return ''; return str.replace(/\s*様\s*$/, '').trim(); }
+
+/**
+ * HP予約のクラス行から実際の車種名を抽出
+ * 「アルファードHクラス(TOYOTA)」→「アルファード」
+ * 「コンパクト(TOYOTA)」→ ''（クラス名であり車種名ではない）
+ * 「ハリアー(TOYOTA)」→「ハリアー」
+ */
+function extractModelName_(classLine) {
+  if (!classLine) return '';
+  // 括弧・メーカー名を除去（全角・半角両方対応）
+  var cleaned = classLine.replace(/[（(].*?[）)]/g, '').replace(/[_](ハイブリッド|HYBRID|hybrid|ガソリン|ディーゼル)$/,'').trim();
+  // クラス名パターン → 車種名ではないので空を返す
+  var classPatterns = [
+    /^アルファード[HM]クラス/, /^(ノア|セレナ|ヴォクシー)Hクラス/,
+    /^ワンボックス[BD]2?/, /^コンパクトSUV/,
+    /^コンパクト$/, /^ハイブリッド$/, /^[ABCDSFH]2?クラス$/
+  ];
+  for (var i = 0; i < classPatterns.length; i++) {
+    if (classPatterns[i].test(cleaned)) {
+      // クラス名の中に車種名が含まれるケースを抽出
+      var modelMap = {
+        'アルファードM': 'アルファードM',  // Bクラスのアルファード（Mを先にマッチ）
+        'アルファード': 'アルファード', 'ヴェルファイア': 'ヴェルファイア',
+        'セレナH': 'セレナH', 'セレナ': 'セレナ',  // セレナH(Hybrid)を先にマッチ
+        'ヴォクシー': 'ヴォクシー',
+        'ノアH': 'ノアH', 'ノア': 'ノア',  // ノアH(Hybrid)を先にマッチ
+        'ヤリスクロス': 'ヤリスクロス', 'ライズ': 'ライズ',
+        'エスクァイア': 'エスクァイア',
+        'ヴィッツ': 'ヴィッツ', 'ノート': 'ノート', 'アクア': 'アクア',
+        'プリウスα': 'プリウスα', 'プリウスアルファ': 'プリウスアルファ', 'プリウス': 'プリウス',
+        'ハリアー': 'ハリアー'
+      };
+      // 長い名前から優先マッチ
+      var mKeys = Object.keys(modelMap).sort(function(a,b){return b.length-a.length;});
+      for (var j = 0; j < mKeys.length; j++) {
+        if (cleaned.indexOf(mKeys[j]) !== -1) return modelMap[mKeys[j]];
+      }
+      return ''; // クラス名だけで車種名なし
+    }
+  }
+  // 再発防止: 「車種名クラス」→「クラス」を除去して車種名を返す
+  if (/クラス$/.test(cleaned)) {
+    var stripped = cleaned.replace(/クラス$/, '');
+    if (stripped.length >= 2 && /[ァ-ヴー]/.test(stripped)) return stripped;
+  }
+  // クラス名パターンに該当しない → そのまま車種名として返す
+  return cleaned;
+}
 
 // ============================================================
 // Parsers
@@ -417,24 +559,53 @@ function parseJalan_(body) {
     if (!rawClass) rawClass = plan;
   }
   var insuranceStr = extractField_(body, '補償（任意加入）');
-  var insurance = insuranceStr.indexOf('免責') !== -1 ? '免責' : 'なし';
+  var insurance = detectInsurance_(insuranceStr);
   var peopleStr = extractField_(body, '乗車人数');
   var people = 0;
   var pM = peopleStr.match(/大人\s*(\d+)/);
   if (pM) people += parseInt(pM[1], 10);
   var cM = peopleStr.match(/子供.*?(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
-  var price = parsePrice_(extractField_(body, '合計金額'));
+  // 料金内訳パース（基本料金/オプション/補償/割引）
+  var basePriceJ = parsePrice_(extractField_(body, '基本料金合計'));
+  var optionPriceJ = parsePrice_(extractField_(body, 'オプション料金'));
+  var insurancePriceJ = parsePrice_(extractField_(body, '補償（任意加入）料金'));
+  var dropOffFeeJ = parsePrice_(extractField_(body, '乗捨料金'));
+  var nightFeeJ = parsePrice_(extractField_(body, '深夜手数料'));
+  var couponJ = parsePrice_(extractField_(body, '利用クーポン'));
+  var pointStrJ = extractField_(body, '利用ポイント');
+  var pointJ = 0;
+  var pointMatchJ = (pointStrJ || '').match(/(\d[\d,]*)/);
+  if (pointMatchJ) pointJ = parsePrice_(pointMatchJ[1]);
+  var discountJ = couponJ + pointJ;
+  var base_price_j = basePriceJ;
+  var option_price_j = optionPriceJ + insurancePriceJ + dropOffFeeJ + nightFeeJ;
+  // 利用者への請求額（クーポン・ポイント差引後）を優先。なければ合計金額
+  var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
+  var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
+  // チャイルドシート検出
+  var optB = 0, optC = 0, optJ2 = 0;
+  var optLine = extractField_(body, 'オプション');
+  if (optLine) {
+    var cbM = optLine.match(/チャイルドシート\s*[x×]\s*(\d+)/i);
+    if (cbM) optC = parseInt(cbM[1], 10);
+    var bbM = optLine.match(/ベビーシート\s*[x×]\s*(\d+)/i);
+    if (bbM) optB = parseInt(bbM[1], 10);
+    var jbM = optLine.match(/ジュニアシート\s*[x×]\s*(\d+)/i);
+    if (jbM) optJ2 = parseInt(jbM[1], 10);
+  }
   return {
     id: id, ota: 'J', name: nameKana || name,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: base_price_j, option_price: option_price_j, discount: discountJ,
+    status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ2,
     _store: store, _rawClass: rawClass
   };
 }
@@ -453,12 +624,27 @@ function parseRakuten_(body) {
     var planMatch = detailClass.match(/プラン[_]([ABCDSFH])/i);
     if (planMatch) {
       vehicleClass = planMatch[1].toUpperCase();
-      rawClass = planMatch[1] + '_OKA';
+      rawClass = planMatch[1] + '_TKM';
     }
   }
   var optionsStr = extractField_(body, '・オプション/車両の特徴');
-  var insurance = optionsStr.indexOf('免責') !== -1 ? '免責' : 'なし';
-  var price = parsePrice_(extractField_(body, '（合計）'));
+  var insurance = detectInsurance_(optionsStr);
+  // 料金内訳パース（楽天）
+  var basePriceR = parsePrice_(extractField_(body, '・基本料金'));
+  if (!basePriceR) basePriceR = parsePrice_(extractField_(body, '基本料金'));
+  var insurancePriceR = parsePrice_(extractField_(body, '・免責補償料金'));
+  if (!insurancePriceR) insurancePriceR = parsePrice_(extractField_(body, '免責補償料金'));
+  var optionPriceR = parsePrice_(extractField_(body, '・オプション料金'));
+  if (!optionPriceR) optionPriceR = parsePrice_(extractField_(body, 'オプション料金'));
+  // クーポン割引（レンタカー事業者クーポン）
+  // 楽天クーポン・楽天ポイントは discount に含めない（楽天側の割引であり事業者売上には影響しない）
+  var couponR = parsePrice_(extractField_(body, '（レンタカー事業者クーポン利用）'));
+  var discountR = couponR;
+  // 差引支払金額（クーポン差引後）を優先。なければ合計金額
+  var billingR = parsePrice_(extractField_(body, '（差引支払金額）'));
+  var price = billingR > 0 ? billingR : parsePrice_(extractField_(body, '（合計）'));
+  var base_price_r = basePriceR;
+  var option_price_r = insurancePriceR + optionPriceR;
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = optionsStr.match(/ベビーシート\s*(\d*)/);
   if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -471,7 +657,8 @@ function parseRakuten_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
-    price: price, status: '確定', tel: '', mail: '',
+    price: price, base_price: base_price_r, option_price: option_price_r, discount: discountR,
+    status: '確定', tel: '', mail: '',
     flight: '', visit_type: '', del_place: '', col_place: '',
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
@@ -497,13 +684,20 @@ function parseSkyticket_(body) {
   var totalPrice = parsePrice_(extractField_(body, '合計料金'));
   var insurancePriceStr = extractField_(body, '免責補償料金');
   var insurancePrice = parsePrice_(insurancePriceStr);
-  var insurance = insurancePrice > 0 ? '免責' : 'なし';
+  var insurance = detectInsurance_(body);
+  if (insurance === 'なし' && insurancePrice > 0) insurance = '免責';
+  // 料金内訳パース（skyticket）
+  var basePriceS = parsePrice_(extractField_(body, '基本料金'));
+  var optionPriceS = parsePrice_(extractField_(body, 'オプション料金'));
+  var base_price_s = basePriceS;
+  var option_price_s = insurancePrice + optionPriceS;
   return {
     id: id, ota: 'S', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: totalPrice, status: '確定', tel: tel, mail: mail,
+    price: totalPrice, base_price: base_price_s, option_price: option_price_s, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
   };
@@ -522,8 +716,16 @@ function parseAirtrip_(body) {
   if (!rawClass) rawClass = extractField_(body, 'プラン名');
   var vehicleClass = extractVehicleClass_(rawClass);
   var price = parsePrice_(extractField_(body, '合計金額'));
+  // 料金内訳パース（エアトリ）
+  var basePriceA = parsePrice_(extractField_(body, '基本料金'));
+  if (!basePriceA) basePriceA = parsePrice_(extractField_(body, 'レンタカー料金'));
+  var optionPriceA = parsePrice_(extractField_(body, 'オプション料金'));
+  var insurancePriceA = parsePrice_(extractField_(body, '補償料金'));
+  if (!insurancePriceA) insurancePriceA = parsePrice_(extractField_(body, '免責補償料金'));
+  var base_price_a = basePriceA;
+  var option_price_a = optionPriceA + insurancePriceA;
   var insuranceStr = extractField_(body, '補償オプション');
-  var insurance = (insuranceStr && insuranceStr.indexOf('免責') !== -1) ? '免責' : 'なし';
+  var insurance = detectInsurance_(insuranceStr || body);
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
@@ -532,7 +734,8 @@ function parseAirtrip_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: base_price_a, option_price: option_price_a, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
   };
@@ -555,37 +758,57 @@ function parseOfficial_(body) {
   if (adultMatch) people += parseInt(adultMatch[1], 10);
   var childMatch = body.match(/子ども:\s*(\d+)/);
   if (childMatch) people += parseInt(childMatch[1], 10);
-  // オフィシャル予約: 車両クラス名→クラスコードマッピング
-  // 例: 「アルファードHクラス(TOYOTA)」→ A （「H」はHybridではなく車種名の一部）
-  var officialClassMap = {
-    // クラス名パターン
+  // オフィシャル予約: 車種名指定 → クラスコード変換
+  // HP予約はクラス指定ではなく車種指定。車種名を最優先でマッチさせる
+  var modelToClass = {
+    // Tier1: 具体的な車種名（最優先）
     'アルファードHクラス(A2)': 'A2', 'アルファードH(A2)': 'A2',
+    'アルファードMクラス': 'B', 'アルファードM': 'B',  // アルファードMは必ずBクラス
+    'プリウスアルファ': 'H', 'プリウスα': 'H', 'プリウス': 'H',
     'アルファードHクラス': 'A', 'アルファードH': 'A',
-    'ワンボックスB2': 'B2', 'ワンボックスB': 'B',
-    'コンパクトSUV': 'C', 'ワンボックスD': 'D',
-    'コンパクト': 'F', 'ハイブリッド': 'H', 'ハリアー': 'S',
-    // 車種名パターン（HPが車種名だけで来る場合）
     'アルファード': 'A',
-    'ヴェルファイア': 'B', 'セレナ': 'B', 'ヴォクシー': 'B', 'ノア': 'B',
+    'ヴェルファイア': 'B',
+    'セレナHクラス': 'B', 'セレナH': 'B', 'セレナ': 'B',
+    'ヴォクシー': 'B',
+    'ノアHクラス': 'B', 'ノアH': 'B', 'ノア': 'B',
     'ヤリスクロス': 'C', 'ライズ': 'C',
     'エスクァイア': 'D',
     'ヴィッツ': 'F', 'ノート': 'F', 'アクア': 'F',
-    'プリウスアルファ': 'H', 'プリウスα': 'H', 'プリウス': 'H',
     'ハリアー': 'S'
+  };
+  var classNameToClass = {
+    // Tier2: クラス名パターン（車種名で見つからなかった場合のみ使用）
+    'アルファードHクラス(A2)': 'A2', 'アルファードH(A2)': 'A2',
+    'アルファードMクラス': 'B', 'アルファードM': 'B',
+    'アルファードHクラス': 'A', 'アルファードH': 'A',
+    'ノアHクラス': 'B', 'セレナHクラス': 'B',
+    'ワンボックスB2': 'B2', 'ワンボックスB': 'B',
+    'コンパクトSUV': 'C', 'ワンボックスD': 'D',
+    'コンパクト': 'F', 'ハイブリッド': 'H', 'ハリアー': 'S'
   };
   var vehicleClass = '';
   var classLineMatch = body.match(/ご予約車両クラス\s*\n\s*(.+)/);
   if (classLineMatch) {
     var classLine = classLineMatch[1].trim();
-    // マッピングテーブルで照合（長い名前を先にチェック）
-    var mapKeys = Object.keys(officialClassMap).sort(function(a,b){return b.length - a.length;});
-    for (var ci = 0; ci < mapKeys.length; ci++) {
-      if (classLine.indexOf(mapKeys[ci]) !== -1) {
-        vehicleClass = officialClassMap[mapKeys[ci]];
+    // Tier1: 車種名を優先マッチ（長い名前から）
+    var modelKeys = Object.keys(modelToClass).sort(function(a,b){return b.length - a.length;});
+    for (var ci = 0; ci < modelKeys.length; ci++) {
+      if (classLine.indexOf(modelKeys[ci]) !== -1) {
+        vehicleClass = modelToClass[modelKeys[ci]];
         break;
       }
     }
-    // マッピングで見つからなければ従来のregex（先頭の単独文字）
+    // Tier2: 車種名で見つからなければクラス名パターン
+    if (!vehicleClass) {
+      var classKeys = Object.keys(classNameToClass).sort(function(a,b){return b.length - a.length;});
+      for (var ci2 = 0; ci2 < classKeys.length; ci2++) {
+        if (classLine.indexOf(classKeys[ci2]) !== -1) {
+          vehicleClass = classNameToClass[classKeys[ci2]];
+          break;
+        }
+      }
+    }
+    // Tier3: どちらでも見つからなければ従来のregex
     if (!vehicleClass) {
       var simpleMatch = classLine.match(/^(A2|B2|[ABCDSFH])クラス/i);
       if (simpleMatch) vehicleClass = simpleMatch[1].toUpperCase();
@@ -596,9 +819,7 @@ function parseOfficial_(body) {
     var planMatch = body.match(/([ABCDSFH]2?)クラス/i);
     if (planMatch) vehicleClass = planMatch[1].toUpperCase();
   }
-  var insurance = 'なし';
-  if (/免責補償制度\(CDW\):\s*あり/.test(body)) insurance = '免責';
-  if (/レンタカー安心パック:\s*あり/.test(body)) insurance = 'NOC';
+  var insurance = detectInsurance_(body);
   var optB = 0, optC = 0, optJ = 0;
   var cbMatch = body.match(/チャイルドシート\(チャイルド\):\s*(\d+)\s*台/);
   if (cbMatch) optC = parseInt(cbMatch[1], 10);
@@ -623,11 +844,224 @@ function parseOfficial_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: price, option_price: 0, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: '', del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: '', _rawClass: vehicleClass, _address: address,
-    _vehicleModel: classLineMatch ? classLineMatch[1].replace(/\(.*?\)/g,'').replace(/[_](ハイブリッド|HYBRID|hybrid|ガソリン|ディーゼル)$/,'').trim() : ''
+    _vehicleModel: classLineMatch ? extractModelName_(classLineMatch[1]) : ''
+  };
+}
+
+// ============================================================
+// GoGoOut Parser
+// ============================================================
+function parseGogoout_(body) {
+  // 予約番号
+  var idMatch = body.match(/予約番号[：:]\s*\n?\s*(\S+)/);
+  if (!idMatch) return null;
+  var id = idMatch[1].trim();
+
+  // 利用時間・返却時間（フォーマット: 2026-07-24 18:00）
+  var lendMatch = body.match(/利用時間[：:]\s*\n?\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
+  var retMatch  = body.match(/返却時間[：:]\s*\n?\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
+  if (!lendMatch || !retMatch) return null;
+
+  // 氏名
+  var nameMatch = body.match(/氏名[：:]\s*\n?\s*(.+)/);
+  var name = nameMatch ? nameMatch[1].trim() : '';
+
+  // 電話番号
+  var telMatch = body.match(/携帯番号[：:]\s*\n?\s*(\S+)/);
+  var tel = telMatch ? cleanPhone_(telMatch[1]) : '';
+
+  // Email
+  var mailMatch = body.match(/Email[：:]\s*\n?\s*(\S+)/);
+  var mail = mailMatch ? mailMatch[1].trim() : '';
+
+  // 車種（トヨタ｜ALPHARD → ALPHARD）
+  var carMatch = body.match(/車種[：:]\s*\n?\s*(.+)/);
+  var rawClass = carMatch ? carMatch[1].trim() : '';
+  // 車種名からクラス判定
+  var vehicleClass = '';
+  if (/ALPHARD|アルファード/i.test(rawClass)) vehicleClass = 'A';
+  else if (/VELLFIRE|ヴェルファイア/i.test(rawClass)) vehicleClass = 'B';
+  else if (/SERENA|セレナ/i.test(rawClass)) vehicleClass = 'B';
+  else if (/VOXY|ヴォクシー/i.test(rawClass)) vehicleClass = 'B';
+  else if (/NOAH|ノア/i.test(rawClass)) vehicleClass = 'B';
+  else if (/YARIS\s*CROSS|ヤリスクロス/i.test(rawClass)) vehicleClass = 'C';
+  else if (/RAIZE|ライズ/i.test(rawClass)) vehicleClass = 'C';
+  else if (/ESQUIRE|エスクァイア/i.test(rawClass)) vehicleClass = 'D';
+  else if (/VITZ|ヴィッツ|NOTE|ノート|AQUA|アクア/i.test(rawClass)) vehicleClass = 'F';
+  else if (/PRIUS\s*ALPHA|プリウスアルファ|プリウスα/i.test(rawClass)) vehicleClass = 'H';
+  else if (/PRIUS|プリウス/i.test(rawClass)) vehicleClass = 'H';
+  else if (/HARRIER|ハリアー/i.test(rawClass)) vehicleClass = 'S';
+  else vehicleClass = extractVehicleClass_(rawClass);
+
+  // 座席数
+  var seatMatch = body.match(/(\d+)座席数/);
+  var people = seatMatch ? parseInt(seatMatch[1], 10) : 0;
+
+  // フライト情報
+  var arrFlightMatch = body.match(/到着フライト番号[：:]\s*\n?\s*(\S+)/);
+  var depFlightMatch = body.match(/復路フライト番号[：:]\s*\n?\s*(\S+)/);
+  var flight = [arrFlightMatch ? arrFlightMatch[1] : '', depFlightMatch ? depFlightMatch[1] : ''].filter(Boolean).join(' / ');
+
+  // チャイルドシート
+  var optB = 0, optC = 0, optJ = 0;
+  var csMatch = body.match(/チャイルドシート[^：:]*[：:]\s*\n?\s*(\d+)/);
+  if (csMatch) optC = parseInt(csMatch[1], 10);
+  else if (/チャイルドシート/i.test(body)) optC = 1;
+  var bsMatch = body.match(/ベビーシート[^：:]*[：:]\s*\n?\s*(\d+)/);
+  if (bsMatch) optB = parseInt(bsMatch[1], 10);
+  var jsMatch = body.match(/ジュニアシート[^：:]*[：:]\s*\n?\s*(\d+)/);
+  if (jsMatch) optJ = parseInt(jsMatch[1], 10);
+
+  // 免責
+  var insurance = detectInsurance_(body);
+
+  // 送迎場所
+  var deliveryMatch = body.match(/送迎サービス[^：:]*[：:]\s*\n?\s*(.+)/);
+  var delPlace = deliveryMatch ? deliveryMatch[1].trim().replace(/\s*TWD\d+.*/, '') : '';
+
+  // 店舗名から高松判定用
+  var storeMatch = body.match(/店舗名[：:]\s*\n?\s*(.+)/);
+  var store = storeMatch ? storeMatch[1].trim() : '';
+  var addrMatch = body.match(/店舗住所[：:]\s*\n?\s*(.+)/);
+  var address = addrMatch ? addrMatch[1].trim() : '';
+
+  return {
+    id: id, ota: 'G', name: name,
+    lend_date: lendMatch[1], lend_time: lendMatch[2],
+    return_date: retMatch[1], return_time: retMatch[2],
+    vehicle: vehicleClass, people: people, insurance: insurance,
+    price: 0, base_price: 0, option_price: 0, discount: 0,
+    status: '確定', tel: tel, mail: mail,
+    flight: flight, visit_type: '', del_place: delPlace, col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ,
+    _store: store, _rawClass: rawClass, _address: address
+  };
+}
+
+// ============================================================
+// レンタカードットコム Parser
+// ============================================================
+function parseRentacarDC_(body) {
+  // 予約番号
+  var idMatch = body.match(/予約番号\s*[：:]\s*(\S+)/);
+  if (!idMatch) return null;
+  var id = idMatch[1].trim();
+
+  // 予約者名（カナ優先）
+  var kanaMatch = body.match(/予約者カナ[：:]\s*(.+)/);
+  var nameMatch = body.match(/予約者名\s*[：:]\s*(.+)/);
+  var name = (kanaMatch ? kanaMatch[1] : nameMatch ? nameMatch[1] : '').trim();
+
+  // 連絡先
+  var telMatch = body.match(/電話番号\s*[：:]\s*([\d-]+)/);
+  var tel = telMatch ? cleanPhone_(telMatch[1]) : '';
+  var mailMatch = body.match(/メールアドレス[：:]\s*(\S+)/);
+  var mail = mailMatch ? mailMatch[1].trim() : '';
+
+  // 貸出日・時間（別フィールド: 「貸出日：」「貸出時間：」）
+  var ldMatch = body.match(/貸出日[^時]*[：:]\s*(\d{4}\/\d{1,2}\/\d{1,2})/);
+  var ltMatch = body.match(/貸出時間\s*[：:]\s*(\d{1,2}:\d{2})/);
+  if (!ldMatch) return null;
+  var lendDate = ldMatch[1].replace(/\//g, '-');
+  var lendTime = ltMatch ? ltMatch[1] : '';
+
+  // 返却日・時間
+  var rdMatch = body.match(/返却日\s*[：:]\s*(\d{4}\/\d{1,2}\/\d{1,2})/);
+  var rtMatch = body.match(/返却時間\s*[：:]\s*(\d{1,2}:\d{2})/);
+  if (!rdMatch) return null;
+  var returnDate = rdMatch[1].replace(/\//g, '-');
+  var returnTime = rtMatch ? rtMatch[1] : '';
+
+  // 店舗名（高松判定用）
+  var storeMatch = body.match(/貸出店舗名[：:]\s*(.+)/);
+  var store = storeMatch ? storeMatch[1].trim() : '';
+
+  // 車両クラス判定（プラン名 + 車種名）
+  var planMatch = body.match(/プラン名\s*[：:]\s*(.+)/);
+  var carMatch = body.match(/車種名\s*[：:]\s*(.+)/);
+  var rawPlan = planMatch ? planMatch[1].trim() : '';
+  var rawCar = carMatch ? carMatch[1].trim() : '';
+  var rawClass = rawPlan + ' ' + rawCar;
+
+  var vehicleClass = '';
+  if (/ALPHARD|アルファード/i.test(rawClass)) vehicleClass = 'A';
+  else if (/VELLFIRE|ヴェルファイア/i.test(rawClass)) vehicleClass = 'B';
+  else if (/SERENA|セレナ/i.test(rawClass)) vehicleClass = 'B';
+  else if (/VOXY|ヴォクシー/i.test(rawClass)) vehicleClass = 'B';
+  else if (/NOAH|ノア/i.test(rawClass)) vehicleClass = 'B';
+  else if (/YARIS\s*CROSS|ヤリスクロス/i.test(rawClass)) vehicleClass = 'C';
+  else if (/RAIZE|ライズ/i.test(rawClass)) vehicleClass = 'C';
+  else if (/ESQUIRE|エスクァイア/i.test(rawClass)) vehicleClass = 'D';
+  else if (/VITZ|ヴィッツ|NOTE|ノート|AQUA|アクア/i.test(rawClass)) vehicleClass = 'F';
+  else if (/PRIUS\s*ALPHA|プリウスアルファ|プリウスα/i.test(rawClass)) vehicleClass = 'H';
+  else if (/PRIUS|プリウス/i.test(rawClass)) vehicleClass = 'H';
+  else if (/HARRIER|ハリアー/i.test(rawClass)) vehicleClass = 'S';
+  else vehicleClass = extractVehicleClass_(rawClass);
+
+  // 人数
+  var adultMatch = body.match(/大人\s*[：:]\s*(\d+)\s*名/);
+  var childMatch = body.match(/子供\s*[：:]\s*(\d+)\s*名/);
+  var people = (adultMatch ? parseInt(adultMatch[1], 10) : 0) + (childMatch ? parseInt(childMatch[1], 10) : 0);
+
+  // 料金（￥35.500 形式: ピリオドが千区切り）
+  var priceMatch = body.match(/合計料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  var price = 0;
+  if (priceMatch) {
+    price = parseInt(priceMatch[1].replace(/\./g, ''), 10) || 0;
+  }
+
+  // 免責
+  var cdwMatch = body.match(/免責料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  var cdwPrice = cdwMatch ? parseInt(cdwMatch[1].replace(/\./g, ''), 10) : 0;
+  var insurance = detectInsurance_(body);
+  if (insurance === 'なし' && cdwPrice > 0) insurance = '免責';
+
+  // フライト情報
+  var arrFlight = '';
+  var depFlight = '';
+  var arrMatch2 = body.match(/現地到着[^：:]*[：:]+\s*.*?([A-Z]{2}\d{2,5})/i);
+  var depMatch2 = body.match(/現地出発[^：:]*[：:]+\s*.*?([A-Z]{2}\d{2,5})/i);
+  if (arrMatch2) arrFlight = arrMatch2[1];
+  if (depMatch2) depFlight = depMatch2[1];
+  var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
+
+  // チャイルドシート
+  var optB = 0, optC = 0, optJ = 0;
+  var optsText = body.match(/オプション[：:]\s*(.+)/);
+  var optsStr = optsText ? optsText[1] : '';
+  var csMatch = optsStr.match(/チャイルドシート[^：:]*[：:]?\s*(\d+)/);
+  if (csMatch) optC = parseInt(csMatch[1], 10);
+  var bsMatch = optsStr.match(/ベビーシート[^：:]*[：:]?\s*(\d+)/);
+  if (bsMatch) optB = parseInt(bsMatch[1], 10);
+  var jsMatch = optsStr.match(/ジュニアシート[^：:]*[：:]?\s*(\d+)/);
+  if (jsMatch) optJ = parseInt(jsMatch[1], 10);
+
+  // 来店/デリバリー判定
+  var visitType = '来店';
+
+  Logger.log('[RC-PARSE] id=' + id + ' name=' + name + ' class=' + vehicleClass +
+    ' plan=' + rawPlan + ' car=' + rawCar + ' price=' + price + ' flight=' + flight);
+
+  // 料金内訳パース（レンタカードットコム）
+  var basePriceRC = parsePrice_(extractField_(body, '基本料金'));
+  var optionPriceRC = parsePrice_(extractField_(body, 'オプション料金'));
+  var base_price_rc = basePriceRC || price;
+  var option_price_rc = cdwPrice + optionPriceRC;
+  return {
+    id: id, ota: 'RC', name: name,
+    lend_date: lendDate, lend_time: lendTime,
+    return_date: returnDate, return_time: returnTime,
+    vehicle: vehicleClass, people: people, insurance: insurance,
+    price: price, base_price: base_price_rc, option_price: option_price_rc, discount: 0,
+    status: '確定', tel: tel, mail: mail,
+    flight: flight, visit_type: visitType, del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ,
+    _store: store, _rawClass: rawClass
   };
 }
 
@@ -654,10 +1088,17 @@ function handleCancellation_(ota, body, dryRun) {
     return;
   }
 
-  // Delete fleet + tasks, update reservation status to キャンセル
+  // Delete fleet + tasks, update reservation status to cancelled
   deleteFromFleet_(reservationId);
   deleteFromTasks_(reservationId);
-  supabaseUpdate_('nha_reservations', 'id=eq.' + encodeURIComponent(reservationId), {status: 'cancelled'});
+  supabaseUpdate_('tkm_reservations', 'id=eq.' + encodeURIComponent(reservationId), {status: 'cancelled'});
+
+  // じゃらん事前決済: キャンセル連動
+  try {
+    handleJalanPaymentCancel_(reservationId);
+  } catch (e) {
+    Logger.log('[JalanPaymentCancel] Error: ' + e.message);
+  }
 
   Logger.log('Cancelled reservation: ' + reservationId);
   return reservationId;
@@ -667,17 +1108,16 @@ function handleCancellation_(ota, body, dryRun) {
 // Supabase API
 // ============================================================
 function supabaseHeaders_() {
-  var key = getSupabaseKey_();
   return {
-    'apikey': key,
-    'Authorization': 'Bearer ' + key,
+    'apikey': getSupabaseKey_(),
+    'Authorization': 'Bearer ' + getSupabaseKey_(),
     'Content-Type': 'application/json',
     'Prefer': 'return=representation'
   };
 }
 
 function supabaseGet_(table, queryParams) {
-  // ★ Supabase REST APIはデフォルト1000件制限。必要に応じてlimitを明示的に付与
+  // Supabase REST APIはデフォルト1000件制限。必要に応じてlimitを明示的に付与
   var sep = queryParams ? '&' : '';
   if (queryParams.indexOf('limit=') === -1) {
     queryParams += sep + 'limit=5000';
@@ -739,11 +1179,11 @@ function supabaseDelete_(table, queryParams) {
 // Reservation DB Operations
 // ============================================================
 function reservationExists_(reservationId) {
-  var rows = supabaseGet_('nha_reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status');
+  var rows = supabaseGet_('tkm_reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status');
   return rows.length > 0 ? rows[0] : null;
 }
 
-// GAS内部フィールド → nha_reservationsカラム名変換
+// GAS内部フィールド → tkm_reservationsカラム名変換
 function toDbRow_(reservation) {
   var row = {
     id: reservation.id,
@@ -760,6 +1200,9 @@ function toDbRow_(reservation) {
     insurance: reservation.insurance || '',
     amount: reservation.price || 0,
     price: reservation.price || 0,
+    base_price: reservation.base_price || 0,
+    option_price: reservation.option_price || 0,
+    discount: reservation.discount || 0,
     tel: reservation.tel || '',
     mail: reservation.mail || '',
     del_flight: reservation.flight || '',
@@ -768,7 +1211,8 @@ function toDbRow_(reservation) {
     car_seat: String(reservation.opt_c || 0),
     junior_seat: String(reservation.opt_j || 0),
     visit_type: reservation.visit_type || '',
-    status: 'confirmed'
+    status: 'confirmed',
+    booked_at: reservation._booked_at || null
   };
   return row;
 }
@@ -777,28 +1221,28 @@ function toDbRow_(reservation) {
 function reactivateReservation_(reservationId, reservation) {
   var row = toDbRow_(reservation);
   row.status = 'confirmed';
-  var ok = supabaseUpdate_('nha_reservations', 'id=eq.' + encodeURIComponent(reservationId), row);
+  var ok = supabaseUpdate_('tkm_reservations', 'id=eq.' + encodeURIComponent(reservationId), row);
   if (ok) Logger.log('Reactivated cancelled reservation: ' + reservationId);
   return ok;
 }
 
 function insertReservation_(reservation) {
   var row = toDbRow_(reservation);
-  var result = supabasePost_('nha_reservations', row);
+  var result = supabasePost_('tkm_reservations', row);
   if (result) Logger.log('Inserted reservation: ' + reservation.id);
   return result;
 }
 
 function deleteReservation_(reservationId) {
-  return supabaseDelete_('nha_reservations', 'id=eq.' + encodeURIComponent(reservationId));
+  return supabaseDelete_('tkm_reservations', 'id=eq.' + encodeURIComponent(reservationId));
 }
 
 function deleteFromFleet_(reservationId) {
-  return supabaseDelete_('nha_fleet', 'reservation_id=eq.' + encodeURIComponent(reservationId));
+  return supabaseDelete_('tkm_fleet', 'reservation_id=eq.' + encodeURIComponent(reservationId));
 }
 
 function deleteFromTasks_(reservationId) {
-  return supabaseDelete_('nha_tasks', 'reservation_id=eq.' + encodeURIComponent(reservationId));
+  return supabaseDelete_('tkm_tasks', 'reservation_id=eq.' + encodeURIComponent(reservationId));
 }
 
 // ============================================================
@@ -807,7 +1251,7 @@ function deleteFromTasks_(reservationId) {
 function autoAssignVehicle_(reservation) {
   var vehicleClass = reservation.vehicle;
   if (!vehicleClass) {
-    Logger.log('No vehicle class for ' + reservation.id + '. Will be 未配車.');
+    Logger.log('No vehicle class for ' + reservation.id + '. Will be unassigned.');
     return;
   }
 
@@ -816,10 +1260,10 @@ function autoAssignVehicle_(reservation) {
   if (vehicleClass === 'A2') searchClass = 'A';
   if (vehicleClass === 'B2') searchClass = 'B';
 
-  var vehicles = supabaseGet_('nha_vehicles',
+  var vehicles = supabaseGet_('tkm_vehicles',
     'type=eq.' + encodeURIComponent(searchClass) + '&insurance_veh=eq.false&select=code,name,plate_no,seats');
   if (vehicles.length === 0) {
-    Logger.log('No vehicles of class ' + searchClass + ' (original: ' + vehicleClass + '). ' + reservation.id + ' will be 未配車.');
+    Logger.log('No vehicles of class ' + searchClass + ' (original: ' + vehicleClass + '). ' + reservation.id + ' will be unassigned.');
     return;
   }
 
@@ -837,28 +1281,28 @@ function autoAssignVehicle_(reservation) {
     busyVehicleCodes[overlappingMaint[i].vehicle_code] = true;
   }
 
-  // 車種名指定がある場合、指定車種のみ検索（フォールバックしない）
+  // 車種名指定がある場合、指定車種のみ検索
   var preferredModel = reservation._vehicleModel || '';
   var assignedVehicle = null;
   if (preferredModel) {
     for (var i = 0; i < vehicles.length; i++) {
       var v = vehicles[i];
       if (busyVehicleCodes[v.code]) continue;
-      if (v.name.indexOf(preferredModel) !== -1) {
+      if (isModelMatch_(v.name, preferredModel)) {
         assignedVehicle = v;
         break;
       }
     }
     if (assignedVehicle) {
-      Logger.log('Preferred model match: ' + preferredModel + ' → ' + assignedVehicle.code);
+      Logger.log('Preferred model match: ' + preferredModel + ' -> ' + assignedVehicle.code);
     } else {
-      // 指定車種が空いていない → 未配車（別車種にフォールバックしない）
-      Logger.log('⚠ Preferred model "' + preferredModel + '" not available for ' + reservation.id +
-        ' (' + lendDate + '~' + returnDate + '). Will be 未配車（手動対応）.');
-      return { _preferredModelUnavailable: true, preferredModel: preferredModel };
+      // HP予約の車種指定車両が全て塞がっている → 未配車にする（フォールバック禁止）
+      Logger.log('Preferred model "' + preferredModel + '" not available for ' + reservation.id +
+        '. Will be unassigned (vehicle model priority).');
+      return null;
     }
   }
-  // 車種指定なしの場合のみクラス内の先頭空車
+  // 指定車種なし（OTA予約 or クラス名のみ指定）→ クラス内の先頭空車
   if (!assignedVehicle) {
     for (var i = 0; i < vehicles.length; i++) {
       var v = vehicles[i];
@@ -870,12 +1314,20 @@ function autoAssignVehicle_(reservation) {
 
   if (!assignedVehicle) {
     Logger.log('No available vehicle for class ' + vehicleClass +
-      ' (' + lendDate + '~' + returnDate + '). ' + reservation.id + ' will be 未配車.');
+      ' (' + lendDate + '~' + returnDate + '). ' + reservation.id + ' will be unassigned.');
+    return null;
+  }
+
+  // INSERT直前の最終重複チェック（二重配車防止ガード）
+  var finalCheck = getOverlappingFleetVehicles_(lendDate, returnDate);
+  if (finalCheck.indexOf(assignedVehicle.code) >= 0) {
+    Logger.log('FINAL GUARD: ' + assignedVehicle.code + ' has become busy between check and insert. ' +
+      reservation.id + ' will be unassigned.');
     return null;
   }
 
   var fleetRow = { reservation_id: reservation.id, vehicle_code: assignedVehicle.code };
-  var result = supabasePost_('nha_fleet', fleetRow);
+  var result = supabasePost_('tkm_fleet', fleetRow);
   if (result) {
     Logger.log('Assigned ' + assignedVehicle.code + ' (' + assignedVehicle.name + ') to ' + reservation.id);
     return assignedVehicle;
@@ -884,12 +1336,11 @@ function autoAssignVehicle_(reservation) {
 }
 
 function getOverlappingFleetVehicles_(lendDate, returnDate) {
-  // ★ DB側で期間重複を絞り込む（全件取得を避ける）
-  // nha_reservations.start_date <= returnDate AND nha_reservations.end_date >= lendDate
-  var query = 'select=vehicle_code,reservation_id,nha_reservations!inner(start_date,end_date)' +
-    '&nha_reservations.start_date=lte.' + encodeURIComponent(returnDate) +
-    '&nha_reservations.end_date=gte.' + encodeURIComponent(lendDate);
-  var overlapping = supabaseGet_('nha_fleet', query);
+  // DB側で期間重複を絞り込む
+  var query = 'select=vehicle_code,reservation_id,tkm_reservations!inner(start_date,end_date)' +
+    '&tkm_reservations.start_date=lte.' + encodeURIComponent(returnDate) +
+    '&tkm_reservations.end_date=gte.' + encodeURIComponent(lendDate);
+  var overlapping = supabaseGet_('tkm_fleet', query);
   var busyCodes = [];
   for (var i = 0; i < overlapping.length; i++) {
     busyCodes.push(overlapping[i].vehicle_code);
@@ -901,47 +1352,50 @@ function getOverlappingMaintenance_(lendDate, returnDate) {
   var query = 'start_date=lte.' + encodeURIComponent(returnDate) +
     '&end_date=gte.' + encodeURIComponent(lendDate) +
     '&select=vehicle_code';
-  return supabaseGet_('nha_maintenance', query);
+  return supabaseGet_('tkm_maintenance', query);
 }
 
 // ============================================================
-// Slack Notifications
+// Slack Notifications (メール転送方式)
 // ============================================================
 function sendSlackSuccess_(items) {
-  var lines = ['✅ 那覇店新規予約取込完了通知', ''];
+  var SLACK_EMAIL = getSlackEmail_();
+  if (!SLACK_EMAIL) { Logger.log('[Slack] SLACK_EMAIL not set.'); return; }
+  var lines = ['高松店新規予約取込完了通知', ''];
   items.forEach(function(r) {
-    lines.push('【' + r.ota + '】' + r.id);
+    lines.push('[' + r.ota + '] ' + r.id);
     lines.push('  ' + r.name + ' / ' + r.dates + ' / ' + r.vehicle + 'クラス');
-    lines.push('  → 配車: ' + r.assignedTo);
+    lines.push('  -> 配車: ' + r.assignedTo);
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(getSlackEmail_(), '✅ 那覇店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
-  Logger.log('Slack success notification sent: ' + items.length + '件');
+  try { MailApp.sendEmail(SLACK_EMAIL, lines[0], lines.join('\n')); } catch (e) { Logger.log('[Slack] Send error: ' + e.message); }
 }
 
 function sendSlackFailure_(items) {
-  var lines = ['❌ 那覇店新規予約取込失敗通知', ''];
+  var SLACK_EMAIL = getSlackEmail_();
+  if (!SLACK_EMAIL) { Logger.log('[Slack] SLACK_EMAIL not set.'); return; }
+  var lines = ['高松店新規予約取込失敗通知', ''];
   items.forEach(function(r) {
-    lines.push('【' + r.ota + '】' + (r.id || '不明'));
+    lines.push('[' + r.ota + '] ' + (r.id || '不明'));
     if (r.name) lines.push('  ' + r.name + (r.dates ? ' / ' + r.dates : ''));
     lines.push('  理由: ' + r.reason);
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件 ※手動対応が必要です');
-  MailApp.sendEmail(getSlackEmail_(), '❌ 那覇店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
-  Logger.log('Slack failure notification sent: ' + items.length + '件');
+  try { MailApp.sendEmail(SLACK_EMAIL, lines[0], lines.join('\n')); } catch (e) { Logger.log('[Slack] Send error: ' + e.message); }
 }
 
 function sendSlackCancel_(items) {
-  var lines = ['🔄 那覇店予約キャンセル処理通知', ''];
+  var SLACK_EMAIL = getSlackEmail_();
+  if (!SLACK_EMAIL) { Logger.log('[Slack] SLACK_EMAIL not set.'); return; }
+  var lines = ['高松店予約キャンセル処理通知', ''];
   items.forEach(function(r) {
-    lines.push('【' + r.ota + '】' + r.id + ' → キャンセル処理完了');
+    lines.push('[' + r.ota + '] ' + r.id + ' -> キャンセル処理完了');
   });
   lines.push('');
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(getSlackEmail_(), '🔄 那覇店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
-  Logger.log('Slack cancel notification sent: ' + items.length + '件');
+  try { MailApp.sendEmail(SLACK_EMAIL, lines[0], lines.join('\n')); } catch (e) { Logger.log('[Slack] Send error: ' + e.message); }
 }
 
 // ============================================================
@@ -961,19 +1415,18 @@ function updateHeartbeat_(key, stats) {
         details: stats
       })
     };
-    var hbKey = getSupabaseKey_();
     var options = {
       method: 'post',
       headers: {
-        'apikey': hbKey,
-        'Authorization': 'Bearer ' + hbKey,
+        'apikey': getSupabaseKey_(),
+        'Authorization': 'Bearer ' + getSupabaseKey_(),
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates'
       },
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     };
-    UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/nha_app_settings', options);
+    UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/tkm_app_settings', options);
     Logger.log('[Heartbeat] Updated: ' + key);
   } catch (e) {
     Logger.log('[Heartbeat] Error: ' + e.message);
@@ -983,18 +1436,17 @@ function updateHeartbeat_(key, stats) {
 // 監視チェック: 30分間隔で実行。ハートビートが途絶えていたらSlack通知
 function checkHeartbeats() {
   var checks = [
-    { key: 'nha_gas_email', label: '那覇GAS予約取込', thresholdMin: 30 }
+    { key: 'tkm_gas_email', label: '高松GAS予約取込', thresholdMin: 30 }
   ];
 
   checks.forEach(function(check) {
     try {
-      var chkKey = getSupabaseKey_();
-      var url = getSupabaseUrl_() + '/rest/v1/app_settings?key=eq.heartbeat_' + check.key + '&select=value';
+      var url = getSupabaseUrl_() + '/rest/v1/tkm_app_settings?key=eq.heartbeat_' + check.key + '&select=value';
       var options = {
         method: 'get',
         headers: {
-          'apikey': chkKey,
-          'Authorization': 'Bearer ' + chkKey
+          'apikey': getSupabaseKey_(),
+          'Authorization': 'Bearer ' + getSupabaseKey_()
         },
         muteHttpExceptions: true
       };
@@ -1005,7 +1457,7 @@ function checkHeartbeats() {
       if (!data || data.length === 0) {
         var initKey = 'alert_init_' + check.key;
         if (!props.getProperty(initKey)) {
-          sendSlackAlert_('⚠️ ' + check.label + ': ハートビート未登録（初回実行待ち）');
+          sendSlackAlert_('WARNING: ' + check.label + ': ハートビート未登録（初回実行待ち）');
           props.setProperty(initKey, 'true');
         }
         return;
@@ -1016,21 +1468,19 @@ function checkHeartbeats() {
       var now = new Date();
       var diffMin = Math.round((now - lastRun) / 60000);
 
-      // ScriptProperties で通知済みフラグ管理（同じ障害で連続通知しない）
-      var props = PropertiesService.getScriptProperties();
       var alertKey = 'alert_sent_' + check.key;
       var alertSent = props.getProperty(alertKey);
 
       if (diffMin > check.thresholdMin) {
         if (!alertSent) {
           var timeStr = Utilities.formatDate(lastRun, 'Asia/Tokyo', 'MM/dd HH:mm');
-          sendSlackAlert_('🚨 ' + check.label + ' が' + diffMin + '分間停止中\n最終実行: ' + timeStr + '\n処理数: ' + (hb.processed || 0) + '件 / エラー: ' + (hb.errors || 0) + '件');
+          sendSlackAlert_('ALERT: ' + check.label + ' が' + diffMin + '分間停止中\n最終実行: ' + timeStr + '\n処理数: ' + (hb.processed || 0) + '件 / エラー: ' + (hb.errors || 0) + '件');
           props.setProperty(alertKey, 'true');
         }
       } else {
         // 復旧検知
         if (alertSent) {
-          sendSlackAlert_('✅ ' + check.label + ' 復旧しました（停止' + diffMin + '分）');
+          sendSlackAlert_('OK: ' + check.label + ' 復旧しました（停止' + diffMin + '分）');
           props.deleteProperty(alertKey);
         }
       }
@@ -1041,8 +1491,10 @@ function checkHeartbeats() {
 }
 
 function sendSlackAlert_(message) {
+  var SLACK_EMAIL = getSlackEmail_();
+  if (!SLACK_EMAIL) { Logger.log('[Alert] SLACK_EMAIL not set.'); return; }
   try {
-    MailApp.sendEmail(getSlackEmail_(), message.split('\n')[0], message);
+    MailApp.sendEmail(SLACK_EMAIL, message.split('\n')[0], message);
     Logger.log('[Alert] Sent: ' + message.split('\n')[0]);
   } catch (e) {
     Logger.log('[Alert] Send error: ' + e.message);
@@ -1054,8 +1506,7 @@ function sendSlackAlert_(message) {
 // ============================================================
 function checkUnknownSenders_() {
   var knownSenders = Object.values(OTA_SENDERS);
-  // 予約系キーワードを含むreserve@宛メールを直近2日で検索
-  var reserveKeywords = ['予約確定', '予約通知', '予約受付', '新規予約', 'ご予約完了', '予約を受け付け'];
+  var reserveKeywords = ['予約確定', '予約通知', '予約受付', '新規予約', 'ご予約完了', '予約を受け付け', '予約登録'];
   var query = 'to:reserve@rent-handyman.jp newer_than:2d -label:' + LABEL_NAME;
   var threads;
   try {
@@ -1067,7 +1518,7 @@ function checkUnknownSenders_() {
   if (threads.length === 0) return;
 
   var unknowns = [];
-  var checkedKey = 'nha_unknown_senders_alerted';
+  var checkedKey = 'tkm_unknown_senders_alerted';
   var alerted = {};
   try {
     var raw = PropertiesService.getScriptProperties().getProperty(checkedKey);
@@ -1081,18 +1532,14 @@ function checkUnknownSenders_() {
       var subject = msgs[j].getSubject();
       var msgId = msgs[j].getId();
 
-      // 既にアラート済みならスキップ
       if (alerted[msgId]) continue;
 
-      // 既知の送信元ならスキップ
       var isKnown = knownSenders.some(function(s) { return from.indexOf(s) !== -1; });
       if (isKnown) continue;
 
-      // 件名に予約キーワードが含まれるか
       var hasReserveKeyword = reserveKeywords.some(function(kw) { return subject.indexOf(kw) !== -1; });
       if (!hasReserveKeyword) continue;
 
-      // 未知の予約メール発見
       unknowns.push({
         from: from,
         subject: subject,
@@ -1104,8 +1551,7 @@ function checkUnknownSenders_() {
   }
 
   if (unknowns.length > 0) {
-    // Slack警告送信
-    var lines = ['⚠️ 那覇店 未知の予約メール検知 ' + unknowns.length + '件', ''];
+    var lines = ['WARNING: 高松店 未知の予約メール検知 ' + unknowns.length + '件', ''];
     for (var u = 0; u < unknowns.length; u++) {
       lines.push('From: ' + unknowns[u].from);
       lines.push('件名: ' + unknowns[u].subject);
@@ -1118,7 +1564,6 @@ function checkUnknownSenders_() {
     sendSlackAlert_(lines.join('\n'));
     Logger.log('Unknown sender alert sent: ' + unknowns.length + ' email(s)');
 
-    // アラート済みを記録（同じメールで重複通知しない）
     try {
       PropertiesService.getScriptProperties().setProperty(checkedKey, JSON.stringify(alerted));
     } catch (e) {}
@@ -1127,7 +1572,6 @@ function checkUnknownSenders_() {
 
 // セットアップ: 監視トリガー追加（30分間隔）
 function setupMonitoring() {
-  // 既存の監視トリガーを削除
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'checkHeartbeats') {
       ScriptApp.deleteTrigger(t);
@@ -1143,19 +1587,95 @@ function setupMonitoring() {
 }
 
 // ============================================================
+// Message-Level Processed ID Management
+// ============================================================
+var PROCESSED_MSG_KEY = 'tkm_processed_msg_ids';
+
+function getProcessedMsgIds_() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty(PROCESSED_MSG_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    Logger.log('[ProcessedMsgIds] Read error: ' + e.message);
+    return {};
+  }
+}
+
+function saveProcessedMsgIds_(ids) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(PROCESSED_MSG_KEY, JSON.stringify(ids));
+  } catch (e) {
+    Logger.log('[ProcessedMsgIds] Save error: ' + e.message);
+  }
+}
+
+/**
+ * 一括再スキャン: processed_takamatsuラベル済みスレッドから未処理のキャンセルを検出・処理
+ */
+function rescanLabeledForMissedCancellations() {
+  var label = getOrCreateLabel_(LABEL_NAME);
+  var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+  var query = '(' + fromClause + ') label:' + LABEL_NAME + ' newer_than:7d';
+  var threads = GmailApp.search(query, 0, 100);
+  Logger.log('[Rescan] Found ' + threads.length + ' labeled thread(s) to scan.');
+
+  var fixed = [];
+  for (var i = 0; i < threads.length; i++) {
+    var messages = threads[i].getMessages();
+    for (var j = 0; j < messages.length; j++) {
+      var msg = messages[j];
+      var subject = msg.getSubject();
+
+      var isCxl = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
+      if (!isCxl) continue;
+
+      var body = msg.getPlainBody();
+      var from = msg.getFrom();
+
+      var ota = null;
+      var otaKeys = Object.keys(OTA_SENDERS);
+      for (var k = 0; k < otaKeys.length; k++) {
+        if (from.indexOf(OTA_SENDERS[otaKeys[k]]) !== -1) { ota = otaKeys[k]; break; }
+      }
+      if (!ota) continue;
+
+      var resId = (ota === 'rakuten') ? extractField_(body, '・予約番号') : extractField_(body, '予約番号');
+      if (!resId) continue;
+
+      var existing = reservationExists_(resId);
+      if (!existing || existing.status === 'cancelled') continue;
+
+      Logger.log('[Rescan] Found missed cancellation: ' + resId + ' (' + ota + ')');
+      deleteFromFleet_(resId);
+      deleteFromTasks_(resId);
+      supabaseUpdate_('tkm_reservations', 'id=eq.' + encodeURIComponent(resId), {status: 'cancelled'});
+      fixed.push(resId);
+      Logger.log('[Rescan] Cancelled: ' + resId);
+    }
+  }
+
+  if (fixed.length > 0) {
+    var msg = '[Rescan] 未処理キャンセル ' + fixed.length + '件を修正\n' + fixed.join(', ');
+    sendSlackAlert_(msg);
+    Logger.log('[Rescan] Fixed ' + fixed.length + ' missed cancellations: ' + fixed.join(', '));
+  } else {
+    Logger.log('[Rescan] No missed cancellations found.');
+  }
+}
+
+// ============================================================
 // Gmail Helpers
 // ============================================================
-// 既存メール全てにprocessed_nahaラベルを付与（初回セットアップ用・1回だけ実行）
 function markAllExistingAsProcessed() {
   var label = getOrCreateLabel_(LABEL_NAME);
   var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
   var query = '(' + fromClause + ') -label:' + LABEL_NAME;
   var threads = GmailApp.search(query, 0, 500);
-  Logger.log('Marking ' + threads.length + ' threads as processed_naha');
+  Logger.log('Marking ' + threads.length + ' threads as ' + LABEL_NAME);
   for (var i = 0; i < threads.length; i++) {
     threads[i].addLabel(label);
   }
-  Logger.log('Done. All existing emails marked as processed_naha.');
+  Logger.log('Done. All existing emails marked as ' + LABEL_NAME + '.');
 }
 
 function getOrCreateLabel_(labelName) {
@@ -1171,41 +1691,128 @@ function getOrCreateLabel_(labelName) {
 // Reprocess: 特定予約IDの再処理（手動実行用）
 // ============================================================
 /**
+ * 指定予約IDのDB+配車状態をSlackに通知する（手動確認用）
+ */
+function notifyReservations() {
+  var targetIds = ['CHANGE_ME'];
+  var items = [];
+  var failures = [];
+  for (var i = 0; i < targetIds.length; i++) {
+    var id = targetIds[i];
+    var res = supabaseGet_('tkm_reservations', 'id=eq.' + encodeURIComponent(id) + '&select=*');
+    if (res.length === 0) {
+      failures.push({id: id, ota: '?', name: '', reason: 'DB未登録'});
+      continue;
+    }
+    var r = res[0];
+    var fleet = supabaseGet_('tkm_fleet', 'reservation_id=eq.' + encodeURIComponent(id) + '&select=vehicle_code');
+    var assignedTo = '未配車';
+    if (fleet.length > 0) {
+      var veh = supabaseGet_('tkm_vehicles', 'code=eq.' + encodeURIComponent(fleet[0].vehicle_code) + '&select=name,plate_no');
+      if (veh.length > 0) {
+        assignedTo = veh[0].name + ' (' + veh[0].plate_no + ')';
+      } else {
+        assignedTo = fleet[0].vehicle_code;
+      }
+    }
+    items.push({
+      id: id, ota: r.ota, name: r.name,
+      dates: r.start_date + '~' + r.end_date,
+      vehicle: r.vehicle_class,
+      assignedTo: assignedTo
+    });
+  }
+  if (items.length > 0) sendSlackSuccess_(items);
+  if (failures.length > 0) sendSlackFailure_(failures);
+  Logger.log('notifyReservations: ' + items.length + ' sent, ' + failures.length + ' failed');
+}
+
+/**
  * 指定した予約IDのメールを再検索し、再処理する。
  * - DB未登録 → メールを再パース → insert → 自動配車
  * - DB登録済み＆vehicle_class空 → メールからクラス取得 → DB更新 → 自動配車
- * GASエディタから手動実行する。
+ * - FORCE_REPARSE=true → fleet削除→再パース→料金内訳含むDB更新→再配車
  */
 function reprocessByIds() {
-  var targetIds = ['MTT21315'];
+  var targetIds = ['CHANGE_ME'];
+  var FORCE_REPARSE = true; // DB登録済みだがbase_price/option_price未設定 → 再パース→内訳更新
   var label = getOrCreateLabel_(LABEL_NAME);
   var successes = [];
   var failures = [];
 
   for (var t = 0; t < targetIds.length; t++) {
     var targetId = targetIds[t];
-    Logger.log('=== Reprocessing: ' + targetId + ' ===');
+    Logger.log('=== Reprocessing: ' + targetId + ' (FORCE=' + FORCE_REPARSE + ') ===');
 
     // 1. DB状態チェック
     var existing = reservationExists_(targetId);
 
     if (existing && existing.status !== 'cancelled') {
-      // DB登録済み（LOZ81086のケース）→ vehicle_classが空なら修正
-      var fullRes = supabaseGet_('nha_reservations', 'id=eq.' + encodeURIComponent(targetId) + '&select=*');
+      // DB登録済み
+      var fullRes = supabaseGet_('tkm_reservations', 'id=eq.' + encodeURIComponent(targetId) + '&select=*');
       if (fullRes.length === 0) {
         failures.push({id: targetId, ota: '?', name: '', reason: 'DB参照失敗'});
         continue;
       }
       var dbRow = fullRes[0];
+
+      // FORCE_REPARSE モード: fleet削除→メール再パース→DB更新→再配車
+      if (FORCE_REPARSE) {
+        Logger.log(targetId + ' FORCE mode: deleting fleet and re-parsing email...');
+        deleteFromFleet_(targetId);
+        var emailDataF = findEmailByReservationId_(targetId);
+        if (!emailDataF) {
+          failures.push({id: targetId, ota: dbRow.ota || '?', name: dbRow.name || '', reason: 'メール検索失敗(FORCE)'});
+          continue;
+        }
+        var parsedF = emailDataF.parsed;
+        if (!parsedF || !parsedF.vehicle) {
+          failures.push({id: targetId, ota: dbRow.ota || '?', name: dbRow.name || '', reason: 'クラス抽出失敗(FORCE)'});
+          continue;
+        }
+        Logger.log(targetId + ' re-parsed class: ' + parsedF.vehicle + ' (was: ' + dbRow.vehicle_class + ')');
+        // DB更新（クラス・車種モデル・料金内訳・保険・オプション）
+        var updateFields = {vehicle_class: parsedF.vehicle};
+        if (parsedF.base_price > 0 || parsedF.option_price > 0) {
+          updateFields.base_price = parsedF.base_price || 0;
+          updateFields.option_price = parsedF.option_price || 0;
+          updateFields.discount = parsedF.discount || 0;
+          updateFields.price = parsedF.price || dbRow.price;
+          updateFields.amount = parsedF.price || dbRow.price;
+        }
+        if (parsedF.insurance) updateFields.insurance = parsedF.insurance;
+        if (parsedF.opt_b > 0) updateFields.car_seat = String(parsedF.opt_b);
+        if (parsedF.opt_c > 0) updateFields.car_seat = String(parsedF.opt_c);
+        if (parsedF.opt_j > 0) updateFields.junior_seat = String(parsedF.opt_j);
+        if (parsedF.flight) updateFields.del_flight = parsedF.flight;
+        supabaseUpdate_('tkm_reservations', 'id=eq.' + encodeURIComponent(targetId), updateFields);
+        // 再配車
+        var fakeResF = {
+          id: targetId, vehicle: parsedF.vehicle,
+          lend_date: dbRow.start_date, return_date: dbRow.end_date,
+          name: dbRow.name, ota: dbRow.ota,
+          _vehicleModel: parsedF._vehicleModel || ''
+        };
+        var assignedF = autoAssignVehicle_(fakeResF);
+        if (assignedF) {
+          successes.push({id: targetId, ota: dbRow.ota, name: dbRow.name,
+            dates: dbRow.start_date + '~' + dbRow.end_date,
+            vehicle: parsedF.vehicle, assignedTo: assignedF.name + ' (' + assignedF.plate_no + ')'});
+        } else {
+          failures.push({id: targetId, ota: dbRow.ota, name: dbRow.name,
+            reason: '配車不可（' + parsedF.vehicle + 'クラス空車なし）',
+            dates: dbRow.start_date + '~' + dbRow.end_date});
+        }
+        continue;
+      }
+
       if (dbRow.vehicle_class && dbRow.vehicle_class !== '') {
-        // 既にクラスがある → 配車だけ確認
         Logger.log(targetId + ' already has vehicle_class=' + dbRow.vehicle_class + '. Checking fleet...');
-        var fleetCheck = supabaseGet_('nha_fleet', 'reservation_id=eq.' + encodeURIComponent(targetId) + '&select=vehicle_code');
+        var fleetCheck = supabaseGet_('tkm_fleet', 'reservation_id=eq.' + encodeURIComponent(targetId) + '&select=vehicle_code');
         if (fleetCheck.length > 0) {
           Logger.log(targetId + ' already assigned to ' + fleetCheck[0].vehicle_code + '. Skipping.');
           continue;
         }
-        // 配車なし → 自動配車を試行
         var fakeRes = {
           id: targetId, vehicle: dbRow.vehicle_class,
           lend_date: dbRow.start_date, return_date: dbRow.end_date, name: dbRow.name, ota: dbRow.ota
@@ -1235,12 +1842,10 @@ function reprocessByIds() {
         failures.push({id: targetId, ota: dbRow.ota || '?', name: dbRow.name || '', reason: 'クラス抽出失敗'});
         continue;
       }
-      // DB更新
-      supabaseUpdate_('nha_reservations', 'id=eq.' + encodeURIComponent(targetId),
+      supabaseUpdate_('tkm_reservations', 'id=eq.' + encodeURIComponent(targetId),
         {vehicle_class: parsed.vehicle});
       Logger.log('Updated vehicle_class=' + parsed.vehicle + ' for ' + targetId);
 
-      // 自動配車
       var fakeRes2 = {
         id: targetId, vehicle: parsed.vehicle,
         lend_date: dbRow.start_date, return_date: dbRow.end_date, name: dbRow.name, ota: dbRow.ota
@@ -1258,7 +1863,7 @@ function reprocessByIds() {
       continue;
     }
 
-    // 2. DB未登録またはキャンセル済み（OPX93188, C260301451のケース）→ メール再取得＆処理
+    // 2. DB未登録またはキャンセル済み → メール再取得＆処理
     Logger.log(targetId + ' not in DB (or cancelled). Searching email...');
     var emailData2 = findEmailByReservationId_(targetId);
     if (!emailData2) {
@@ -1266,18 +1871,15 @@ function reprocessByIds() {
       continue;
     }
 
-    // processed_nahaラベルを除去（再処理のため）
     try {
       emailData2.thread.removeLabel(label);
-      Logger.log('Removed processed_naha label from thread for ' + targetId);
+      Logger.log('Removed ' + LABEL_NAME + ' label from thread for ' + targetId);
     } catch (e) {
       Logger.log('Label removal warning: ' + e.message);
     }
 
-    // processMessage_で処理
     var result = processMessage_(emailData2.message, false);
 
-    // 処理後ラベルを再付与
     try { emailData2.thread.addLabel(label); } catch (e) {}
 
     if (result) {
@@ -1300,12 +1902,10 @@ function reprocessByIds() {
  * 予約番号でGmailを検索し、該当メッセージとパース結果を返す
  */
 function findEmailByReservationId_(reservationId) {
-  // まずOTA送信元フィルター付きで検索
   var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
   var query = '(' + fromClause + ') ' + reservationId;
   var threads = GmailApp.search(query, 0, 10);
 
-  // 見つからなければ予約番号のみで再検索（from制約を外す）
   if (threads.length === 0) {
     Logger.log('Retry search without from filter: ' + reservationId);
     threads = GmailApp.search('"' + reservationId + '"', 0, 10);
@@ -1319,10 +1919,8 @@ function findEmailByReservationId_(reservationId) {
       if (body.indexOf(reservationId) === -1) continue;
 
       var subject = msg.getSubject();
-      // キャンセルメールはスキップ
       if (CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; })) continue;
 
-      // OTA判定
       var from = msg.getFrom();
       var ota = null;
       var otaKeys = Object.keys(OTA_SENDERS);
@@ -1331,7 +1929,6 @@ function findEmailByReservationId_(reservationId) {
       }
       if (!ota) continue;
 
-      // パース
       var parsed = null;
       switch (ota) {
         case 'jalan':      parsed = parseJalan_(body); break;
@@ -1340,6 +1937,9 @@ function findEmailByReservationId_(reservationId) {
         case 'airtrip':    parsed = parseAirtrip_(body); break;
         case 'airtrip_dp': parsed = parseAirtrip_(body); break;
         case 'official':   parsed = parseOfficial_(body); break;
+        case 'gogoout':    parsed = parseGogoout_(body); break;
+        case 'rentacar_dc': parsed = parseRentacarDC_(body); break;
+        case 'rentacar_dc2': parsed = parseRentacarDC_(body); break;
       }
 
       if (parsed) {
@@ -1351,4 +1951,497 @@ function findEmailByReservationId_(reservationId) {
 
   Logger.log('Email not found for: ' + reservationId);
   return null;
+}
+
+// ============================================================
+// booked_at バックフィル（一回限り手動実行）
+// tkm_reservations.booked_at が null の行をGmailメール受信日時で埋める
+// ============================================================
+function backfillBookedAt() {
+  var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+  var query = '(' + fromClause + ')';
+
+  var allMessages = [];
+  var start = 0;
+  var batchSize = 100;
+  while (true) {
+    var threads = GmailApp.search(query, start, batchSize);
+    if (threads.length === 0) break;
+    for (var i = 0; i < threads.length; i++) {
+      var msgs = threads[i].getMessages();
+      for (var j = 0; j < msgs.length; j++) {
+        allMessages.push(msgs[j]);
+      }
+    }
+    if (threads.length < batchSize) break;
+    start += batchSize;
+  }
+
+  Logger.log('[backfill] Total messages: ' + allMessages.length);
+
+  var updated = 0, skipped = 0, errors = 0;
+
+  for (var k = 0; k < allMessages.length; k++) {
+    var msg = allMessages[k];
+    var from = msg.getFrom();
+    var subject = msg.getSubject();
+    var body = msg.getPlainBody();
+    var msgDate = msg.getDate();
+
+    var isCancellation = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
+    if (isCancellation) continue;
+
+    var ota = null;
+    var otaKeys = Object.keys(OTA_SENDERS);
+    for (var oi = 0; oi < otaKeys.length; oi++) {
+      if (from.indexOf(OTA_SENDERS[otaKeys[oi]]) !== -1) { ota = otaKeys[oi]; break; }
+    }
+    if (!ota) continue;
+
+    if (!OTA_RESERVE_SUBJECTS[ota] || subject.indexOf(OTA_RESERVE_SUBJECTS[ota]) === -1) continue;
+
+    var reservationId = extractReservationId_(ota, body);
+    if (!reservationId) continue;
+
+    var bookedAtStr = Utilities.formatDate(msgDate, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ssXXX");
+    var patchUrl = getSupabaseUrl_() + '/rest/v1/tkm_reservations'
+      + '?id=eq.' + encodeURIComponent(reservationId)
+      + '&booked_at=is.null';
+    var options = {
+      method: 'PATCH',
+      headers: {
+        'apikey': getSupabaseKey_(),
+        'Authorization': 'Bearer ' + getSupabaseKey_(),
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      payload: JSON.stringify({ booked_at: bookedAtStr }),
+      muteHttpExceptions: true
+    };
+
+    try {
+      var resp = UrlFetchApp.fetch(patchUrl, options);
+      var arr = JSON.parse(resp.getContentText());
+      if (arr && arr.length > 0) {
+        Logger.log('[backfill] Updated: ' + reservationId + ' -> ' + bookedAtStr);
+        updated++;
+      } else {
+        skipped++;
+      }
+    } catch (e) {
+      Logger.log('[backfill] Error ' + reservationId + ': ' + e.message);
+      errors++;
+    }
+
+    if (k > 0 && k % 50 === 0) Utilities.sleep(1000);
+  }
+
+  Logger.log('[backfill] Done. updated=' + updated + ' skipped=' + skipped + ' errors=' + errors);
+}
+
+// 予約IDを本文から抽出（バックフィル用）
+function extractReservationId_(ota, body) {
+  if (ota === 'rakuten') {
+    return extractField_(body, '・予約番号');
+  }
+  return extractField_(body, '予約番号');
+}
+
+// ============================================================
+// じゃらん事前決済（高松店版 — 札幌店GASより移植）
+// ============================================================
+
+var JALAN_PAY_CHANNEL = 'PLACEHOLDER_JALAN_PAY_CHANNEL';  // TODO: 高松店用Slackチャンネルを設定
+var PAYMENT_SHEET_ID = 'PLACEHOLDER_PAYMENT_SHEET_ID';     // TODO: 高松店用スプレッドシートIDを設定
+var SQUARE_LOCATION_ID = 'L8N7J9RKPN3WH';
+
+function getSlackBotToken_() { return PropertiesService.getScriptProperties().getProperty('SLACK_BOT_TOKEN'); }
+function getSquareToken_() { return PropertiesService.getScriptProperties().getProperty('SQUARE_API_TOKEN'); }
+
+// Square Payment Links API で決済リンクを直接作成
+function createSquarePaymentLink_(itemName, amount) {
+  var token = getSquareToken_();
+  if (!token) { Logger.log('[Square] No SQUARE_API_TOKEN'); return null; }
+  try {
+    var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/online-checkout/payment-links', {
+      method: 'post',
+      headers: {'Authorization':'Bearer '+token, 'Content-Type':'application/json', 'Square-Version':'2024-01-18'},
+      payload: JSON.stringify({
+        idempotency_key: Utilities.getUuid(),
+        quick_pay: {
+          name: itemName,
+          price_money: {amount: amount, currency: 'JPY'},
+          location_id: SQUARE_LOCATION_ID
+        }
+      }),
+      muteHttpExceptions: true
+    });
+    var data = JSON.parse(resp.getContentText());
+    if (data.payment_link && data.payment_link.url) {
+      Logger.log('[Square] Link created: ' + data.payment_link.url);
+      return data.payment_link.url;
+    }
+    Logger.log('[Square] API error: ' + resp.getContentText());
+    return null;
+  } catch (e) { Logger.log('[Square] Exception: ' + e.message); return null; }
+}
+
+function handleJalanPayment_(reservation) {
+  var resId = reservation.id;
+
+  var existing = supabaseGet_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId) + '&select=id');
+  if (existing && existing.length > 0) { Logger.log('[JalanPayment] Already exists: ' + resId); return; }
+
+  // 1. Square決済リンクを直接作成
+  var lendShort = (reservation.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+  var retShort = (reservation.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+  var itemName = (reservation.name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+  var payUrl = createSquarePaymentLink_(itemName, reservation.price||0);
+
+  if (!payUrl) {
+    // Square API失敗 → status='new'で保存（checkSquareLinksでリトライ）+ Slack障害通知
+    var payData = {reservation_id:resId, customer_name:reservation.name, customer_email:reservation.mail||'', amount:reservation.price||0, status:'new', lend_date:reservation.lend_date, return_date:reservation.return_date, vehicle_class:reservation.vehicle||''};
+    supabasePost_('tkm_jalan_payments', payData);
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *Squareリンク作成失敗*\n予約番号： ' + resId + '\n宛名： ' + reservation.name + '\n金額： ¥' + (reservation.price||0) + '\n→ checkSquareLinksトリガーでリトライします');
+    Logger.log('[JalanPayment] Square link creation failed, saved as new: ' + resId);
+    return;
+  }
+
+  // 2. DB保存（link_created状態で即保存）
+  var now = new Date().toISOString();
+  var payData = {reservation_id:resId, customer_name:reservation.name, customer_email:reservation.mail||'', amount:reservation.price||0, status:'link_created', square_payment_url:payUrl, link_created_at:now, lend_date:reservation.lend_date, return_date:reservation.return_date, vehicle_class:reservation.vehicle||''};
+  var inserted = supabasePost_('tkm_jalan_payments', payData);
+  if (!inserted) { Logger.log('[JalanPayment] DB insert failed: ' + resId); return; }
+  Logger.log('[JalanPayment] Created with link: ' + resId + ' ¥' + reservation.price + ' → ' + payUrl);
+
+  // 3. Slack投稿（リンク付きで可視化）
+  var slackText = '💳 *じゃらん事前決済*\n利用店舗： 高松店\n予約番号： ' + resId + '\n宛名： ' + reservation.name + '\n品目： じゃらん事前決済(' + lendShort + '-' + retShort + ')\n金額： ¥' + (reservation.price||0).toLocaleString() + '\nSquareリンク： ' + payUrl;
+  var slackTs = postToSlackChannel_(JALAN_PAY_CHANNEL, slackText);
+  if (slackTs) {
+    supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId), {slack_ts: slackTs});
+  }
+
+  // 4. スプレッドシートに記録
+  appendToPaymentSheet_({reservation_id:resId, customer_name:reservation.name, amount:reservation.price||0, lend_date:reservation.lend_date, return_date:reservation.return_date, slack_ts:slackTs||''}, payUrl);
+}
+
+function handleJalanPaymentCancel_(reservationId) {
+  var rows = supabaseGet_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,amount,customer_name');
+  if (!rows || rows.length === 0) return;
+  var pay = rows[0];
+  var prevStatus = pay.status;
+  if (prevStatus === 'cancelled' || prevStatus === 'refund' || prevStatus === 'refunded') { Logger.log('[JalanPaymentCancel] Already cancelled/refunded: ' + reservationId); return; }
+  var now = new Date().toISOString();
+  if (prevStatus === 'paid') {
+    supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId), {status:'refund', cancelled_at:now});
+    updatePaymentSheetStatus_(reservationId, '⚠️ 要返金', '');
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '⚠️ *返金対応必要*\n予約番号： ' + reservationId + '\n宛名： ' + (pay.customer_name||'') + '\n金額： ¥' + (pay.amount||0) + '\n状態： 入金済みキャンセル → *要Square返金*');
+  } else {
+    supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId), {status:'cancelled', cancelled_at:now});
+    updatePaymentSheetStatus_(reservationId, '❌ キャンセル', '');
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '🔄 *キャンセル（決済前）*\n予約番号： ' + reservationId + '\n宛名： ' + (pay.customer_name||'') + '\n金額： ¥' + (pay.amount||0) + '\n状態： 未入金キャンセル・対応不要');
+  }
+  Logger.log('[JalanPaymentCancel] Done: ' + reservationId + ' → ' + (prevStatus === 'paid' ? 'refund' : 'cancelled'));
+}
+
+function postToSlackChannel_(channel, text) {
+  var token = getSlackBotToken_();
+  if (!token) { Logger.log('[Slack] No SLACK_BOT_TOKEN configured'); return null; }
+  try {
+    var resp = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', {method:'post', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}, payload:JSON.stringify({channel:channel, text:text}), muteHttpExceptions:true});
+    var data = JSON.parse(resp.getContentText());
+    if (data.ok) return data.ts;
+    Logger.log('[Slack] Post error: ' + data.error);
+    return null;
+  } catch (e) { Logger.log('[Slack] Exception: ' + e.message); return null; }
+}
+
+function getSlackThreadReplies_(channel, ts) {
+  var token = getSlackBotToken_();
+  if (!token) return [];
+  try {
+    var resp = UrlFetchApp.fetch('https://slack.com/api/conversations.replies?channel=' + channel + '&ts=' + ts, {method:'get', headers:{'Authorization':'Bearer '+token}, muteHttpExceptions:true});
+    var data = JSON.parse(resp.getContentText());
+    return data.ok ? (data.messages||[]) : [];
+  } catch (e) { Logger.log('[Slack] Thread read error: ' + e.message); return []; }
+}
+
+function checkSquareLinks() {
+  var rows = supabaseGet_('tkm_jalan_payments', 'status=in.(new,link_created)&select=reservation_id,customer_name,customer_email,amount,status,slack_ts,lend_date,return_date,square_payment_url');
+  if (!rows || rows.length === 0) return;
+  for (var i = 0; i < rows.length; i++) {
+    var pay = rows[i];
+
+    // status=new: handleJalanPayment_でSquareリンク作成が失敗した行 → リトライ
+    if (pay.status === 'new') {
+      var lendShort = (pay.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+      var retShort = (pay.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+      var itemName = (pay.customer_name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+      var payUrl = createSquarePaymentLink_(itemName, pay.amount||0);
+      if (!payUrl) { Logger.log('[checkSquareLinks] Retry failed: ' + pay.reservation_id); continue; }
+      var now = new Date().toISOString();
+      supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id), {square_payment_url:payUrl, status:'link_created', link_created_at:now});
+      Logger.log('[checkSquareLinks] Retry success: ' + pay.reservation_id + ' → ' + payUrl);
+      // Slack投稿（リトライ成功通知）
+      var slackText = '💳 *じゃらん事前決済（リトライ成功）*\n予約番号： ' + pay.reservation_id + '\n宛名： ' + pay.customer_name + '\n金額： ¥' + (pay.amount||0).toLocaleString() + '\nSquareリンク： ' + payUrl;
+      var slackTs = postToSlackChannel_(JALAN_PAY_CHANNEL, slackText);
+      if (slackTs && !pay.slack_ts) { supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id), {slack_ts: slackTs}); }
+      appendToPaymentSheet_(pay, payUrl);
+      pay.square_payment_url = payUrl; pay.status = 'link_created';
+    }
+
+    // status=link_created: メール送信
+    if (pay.status === 'link_created' && pay.square_payment_url && pay.customer_email) {
+      var sent = sendJalanPaymentEmail_(pay);
+      if (sent) {
+        supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id), {status:'email_sent', email_sent_at:new Date().toISOString()});
+        postToSlackChannel_(JALAN_PAY_CHANNEL, '📧 *メール送信完了*\n予約番号： ' + pay.reservation_id + '\n宛名： ' + pay.customer_name + '\n金額： ¥' + pay.amount);
+        Logger.log('[checkSquareLinks] Email sent: ' + pay.reservation_id);
+      }
+    }
+  }
+}
+
+function sendJalanPaymentEmail_(pay) {
+  if (!pay || !pay.customer_email || !pay.square_payment_url) { Logger.log('[JalanPayment] Email BLOCKED: missing data'); return; }
+  try {
+    // --- TODO: 以下のプレースホルダーをGASスクリプトプロパティまたは定数で設定 ---
+    var LINE_URL = PropertiesService.getScriptProperties().getProperty('LINE_URL') || 'https://lin.ee/XXXXXXXXX';
+    var LINE_ID = PropertiesService.getScriptProperties().getProperty('LINE_ID') || '@xxxxx';
+    var STORE_TEL = PropertiesService.getScriptProperties().getProperty('STORE_TEL') || '000-0000-0000';
+    var STORE_EMAIL = PropertiesService.getScriptProperties().getProperty('STORE_EMAIL') || 'reserve@buddica-takamatsu.jp';
+
+    var subject = '【BUDDICA高松店】事前決済のご案内（予約番号: ' + pay.reservation_id + '）';
+
+    var body = '';
+    body += pay.customer_name + ' 様\n\n';
+    body += 'この度はBUDDICA高松店をご予約いただき、\n';
+    body += '誠にありがとうございます。\n\n';
+    body += '下記の手順に沿って、ご出発準備をお願いいたします。\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '■ ご予約内容\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '予約番号: ' + pay.reservation_id + '\n';
+    body += '貸出日: ' + (pay.lend_date || '') + '\n';
+    body += '返却日: ' + (pay.return_date || '') + '\n';
+    body += '車両クラス: ' + (pay.vehicle_class || '') + '\n';
+    body += 'お支払い金額: ¥' + Number(pay.amount||0).toLocaleString() + '\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '■ STEP1: LINE友だち追加（必須）\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '当日のお届け場所のご連絡・変更連絡は\n';
+    body += 'すべてLINEで行っております。\n\n';
+    body += '▼ 友だち追加はこちら\n';
+    body += LINE_URL + '\n\n';
+    body += 'LINE ID: ' + LINE_ID + '\n\n';
+    body += '※ 追加後、「お名前」「予約番号」をメッセージでお送りください。\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '■ STEP2: 事前決済（必須）\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += 'お支払い金額: ¥' + Number(pay.amount||0).toLocaleString() + '\n\n';
+    body += '▼ お支払いはこちら（クレジットカード）\n';
+    body += pay.square_payment_url + '\n\n';
+    body += '※ ご出発3日前の19:00までにお支払いください。\n';
+    body += '※ 期限を過ぎますとご予約をキャンセルさせていただく\n';
+    body += '  場合がございます。\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '■ 当日の流れ（デリバリー）\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '1. LINEでお届け場所・時間を確認\n';
+    body += '2. スタッフがご指定場所へお車をお届け\n';
+    body += '3. 免許証確認・車両説明後、ご出発\n';
+    body += '4. ご返却もご指定場所でOK\n\n';
+    body += '※ 高松市内のホテル・駅・空港等へお届け可能です。\n';
+    body += '※ お届け場所はLINEでご相談ください。\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '■ ご注意事項\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += '・当店はデリバリー専門のレンタカーです。\n';
+    body += '  実店舗での受け渡しは行っておりません。\n';
+    body += '・免許証（原本）を必ずご持参ください。\n';
+    body += '・キャンセル・変更はLINEまたはお電話にて\n';
+    body += '  ご連絡ください。\n\n';
+
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    body += 'BUDDICA高松店（デリバリーレンタカー）\n';
+    body += 'TEL: ' + STORE_TEL + '\n';
+    body += 'LINE: ' + LINE_ID + '\n';
+    body += '営業時間: 9:00〜19:00（年中無休）\n';
+    body += '━━━━━━━━━━━━━━━━━━━━━━━━\n';
+
+    GmailApp.sendEmail(pay.customer_email, subject, body, {name: 'BUDDICA高松店', replyTo: STORE_EMAIL});
+    return true;
+  } catch (e) { Logger.log('[JalanPaymentEmail] Error: ' + e.message); return false; }
+}
+
+// 入金確認 v3（Payment Links APIベース）
+function checkPaymentStatus() {
+  var ss = SpreadsheetApp.openById(PAYMENT_SHEET_ID);
+  var sheet = ss.getSheetByName('支払い管理');
+  if (!sheet) { Logger.log('[PaymentStatus] Sheet not found'); return; }
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  var unpaidRows = [];
+  for (var i = 0; i < data.length; i++) {
+    var status = String(data[i][8] || '');
+    var url = String(data[i][7] || '');
+    var store = String(data[i][2] || '');
+    if (status.indexOf('済') === -1 && status.indexOf('キャンセル') === -1 && url) {
+      unpaidRows.push({rowIndex:i+2, reservationId:String(data[i][3]||'').trim(), customerName:String(data[i][4]||'').replace(/様$/,'').trim(), amount:Number(data[i][6])||0, url:url.trim(), media:String(data[i][13]||'').trim(), store:store.trim(), orderId:null});
+    }
+  }
+  if (unpaidRows.length === 0) { Logger.log('[PaymentStatus] No unpaid rows found'); return; }
+  Logger.log('[PaymentStatus] Checking ' + unpaidRows.length + ' unpaid rows');
+  var token = getSquareToken_();
+  if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSQUARE_API_TOKENが未設定です。'); return; }
+  var linkMap = fetchPaymentLinkMap_(token);
+  var linkMapSize = linkMap ? Object.keys(linkMap).length : 0;
+  if (linkMapSize === 0) { Logger.log('[PaymentStatus] CRITICAL: Payment Links map is empty'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Payment Links APIが0件を返しました。\n`debugPaymentV3` を手動実行して診断してください。'); return; }
+  var orderIdsToCheck = [], unmatchedRows = [];
+  for (var i = 0; i < unpaidRows.length; i++) {
+    var normalizedUrl = normalizeSquareUrl_(unpaidRows[i].url);
+    var orderId = linkMap[normalizedUrl];
+    if (orderId) { unpaidRows[i].orderId = orderId; orderIdsToCheck.push(orderId); }
+    else { unmatchedRows.push(unpaidRows[i].reservationId); Logger.log('[PaymentStatus] No URL match for ' + unpaidRows[i].reservationId); }
+  }
+  if (orderIdsToCheck.length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nPayment Linksは'+linkMapSize+'件取得できましたが、スプシURLが1件もマッチしません。\n対象: ' + unmatchedRows.join(', ')); return; }
+  var orderMap = batchRetrieveOrders_(token, orderIdsToCheck);
+  if (!orderMap || Object.keys(orderMap).length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Orders取得が0件です。'); return; }
+  var paidCount = 0;
+  for (var i = 0; i < unpaidRows.length; i++) {
+    var pay = unpaidRows[i];
+    if (!pay.orderId) continue;
+    try {
+      var matched = isOrderPaid_(orderMap[pay.orderId]);
+      if (matched) {
+        var paidDateStr = Utilities.formatDate(new Date(matched.paid_at), 'Asia/Tokyo', 'yyyy/MM/dd');
+        sheet.getRange(pay.rowIndex, 9).setValue('✅ 入金済み');
+        sheet.getRange(pay.rowIndex, 10).setValue(paidDateStr);
+        sheet.getRange(pay.rowIndex, 11).setValue(matched.order_id);
+        try { supabaseUpdate_('tkm_jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservationId) + '&status=neq.paid', {status:'paid', paid_at:matched.paid_at}); } catch(e) {}
+        postToSlackChannel_(JALAN_PAY_CHANNEL, '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： 高松店');
+        Logger.log('[PaymentStatus] Paid: ' + pay.reservationId);
+        paidCount++;
+      }
+    } catch (e) { Logger.log('[PaymentStatus] Error checking ' + pay.reservationId + ': ' + e.message); }
+  }
+  Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid');
+}
+
+function fetchPaymentLinkMap_(token) {
+  var map = {}, cursor = null, fetched = 0;
+  do {
+    var apiUrl = 'https://connect.squareup.com/v2/online-checkout/payment-links?limit=100';
+    if (cursor) apiUrl += '&cursor=' + encodeURIComponent(cursor);
+    try {
+      var resp = UrlFetchApp.fetch(apiUrl, {method:'get', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Square-Version':'2024-01-18'}, muteHttpExceptions:true});
+      if (resp.getResponseCode() !== 200) { Logger.log('[PaymentLinks] API error ' + resp.getResponseCode()); break; }
+      var data = JSON.parse(resp.getContentText());
+      (data.payment_links||[]).forEach(function(link) {
+        if (link.order_id) {
+          if (link.url) map[normalizeSquareUrl_(link.url)] = link.order_id;
+          if (link.long_url) map[normalizeSquareUrl_(link.long_url)] = link.order_id;
+        }
+      });
+      fetched += (data.payment_links||[]).length;
+      cursor = data.cursor;
+    } catch (e) { Logger.log('[PaymentLinks] Fetch error: ' + e.message); break; }
+  } while (cursor && fetched < 200);
+  Logger.log('[PaymentLinks] Total map entries: ' + Object.keys(map).length);
+  return map;
+}
+
+function normalizeSquareUrl_(url) { return String(url||'').trim().replace(/\/+$/,'').toLowerCase(); }
+
+function batchRetrieveOrders_(token, orderIds) {
+  var map = {}, unique = [], seen = {};
+  orderIds.forEach(function(id) { if (!seen[id]) { unique.push(id); seen[id]=true; } });
+  for (var i = 0; i < unique.length; i += 100) {
+    try {
+      var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/batch-retrieve', {method:'post', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json','Square-Version':'2024-01-18'}, payload:JSON.stringify({location_id:SQUARE_LOCATION_ID, order_ids:unique.slice(i,i+100)}), muteHttpExceptions:true});
+      (JSON.parse(resp.getContentText()).orders||[]).forEach(function(o) { map[o.id]=o; });
+    } catch (e) { Logger.log('[BatchOrders] Error: ' + e.message); }
+  }
+  Logger.log('[BatchOrders] Retrieved ' + Object.keys(map).length + '/' + unique.length + ' orders');
+  return map;
+}
+
+function isOrderPaid_(order) {
+  if (!order || !order.tenders || order.tenders.length === 0) return null;
+  var netDue = order.net_amount_due_money;
+  if (netDue && netDue.amount !== 0) return null;
+  return {paid_at: order.tenders[0].created_at, order_id: order.id};
+}
+
+function checkUnpaidAlert() {
+  var ss = SpreadsheetApp.openById(PAYMENT_SHEET_ID);
+  var sheet = ss.getSheetByName('支払い管理');
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  var now = new Date(), alerts = [];
+  for (var i = 0; i < data.length; i++) {
+    var status = String(data[i][8]||'');
+    if (status.indexOf('済')!==-1 || status.indexOf('キャンセル')!==-1) continue;
+    var resvId = String(data[i][3]||'').trim(), name = String(data[i][4]||'').trim(), amount = Number(data[i][6])||0, url = String(data[i][7]||'').trim();
+    if (!resvId || !url) continue;
+    var resv = supabaseGet_('tkm_reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=start_date');
+    var lendDate = (resv && resv.length > 0 && resv[0].start_date) ? resv[0].start_date : null;
+    if (!lendDate) { var dm = String(data[i][5]||'').match(/(\d{2})\/(\d{2})/); if (dm) lendDate = now.getFullYear() + '-' + dm[1] + '-' + dm[2]; }
+    if (!lendDate) continue;
+    var diffDays = Math.floor((new Date(lendDate+'T00:00:00+09:00') - now) / 86400000);
+    if (diffDays <= 3) alerts.push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays});
+  }
+  if (alerts.length === 0) return;
+  var lines = ['🚨 *未入金アラート* ' + alerts.length + '件\n'];
+  alerts.forEach(function(a) {
+    var urgency = a.daysLeft<=0 ? '🔴期限超過' : a.daysLeft<=1 ? '🟠明日出発' : '🟡'+a.daysLeft+'日後';
+    lines.push('• ' + a.reservationId + ' ' + a.customerName + ' ¥' + a.amount + '（出発: ' + a.lendDate + ' ' + urgency + '）');
+  });
+  lines.push('\n期限超過・要電話確認');
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[UnpaidAlert] ' + alerts.length + '件通知');
+}
+
+function appendToPaymentSheet_(pay, payUrl) {
+  try {
+    var ss = SpreadsheetApp.openById(PAYMENT_SHEET_ID);
+    var sheet = ss.getSheetByName('支払い管理');
+    if (!sheet) return;
+    var lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      var existingIds = sheet.getRange(2, 4, lastRow-1, 1).getValues();
+      for (var i = 0; i < existingIds.length; i++) { if (String(existingIds[i][0]).trim() === pay.reservation_id) { Logger.log('[Sheet] Already exists: ' + pay.reservation_id); return; } }
+    }
+    var lendShort = (pay.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+    var retShort = (pay.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+    sheet.appendRow([lastRow, Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd'), '高松店', pay.reservation_id, (pay.customer_name||'')+'様', 'じゃらん事前決済('+lendShort+'-'+retShort+')', pay.amount||0, payUrl||pay.square_payment_url||'', '⏳ 未払い', '', '', pay.slack_ts||'', JALAN_PAY_CHANNEL||'', 'じゃらん']);
+    Logger.log('[Sheet] Appended: ' + pay.reservation_id);
+  } catch (e) { Logger.log('[Sheet] Append error: ' + e.message); }
+}
+
+function updatePaymentSheetStatus_(reservationId, newStatus, paidDate) {
+  try {
+    var ss = SpreadsheetApp.openById(PAYMENT_SHEET_ID);
+    var sheet = ss.getSheetByName('支払い管理');
+    if (!sheet) return;
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    var resIds = sheet.getRange(2, 4, lastRow-1, 1).getValues();
+    for (var i = 0; i < resIds.length; i++) {
+      if (String(resIds[i][0]).trim() === reservationId) {
+        sheet.getRange(i+2, 9).setValue(newStatus);
+        if (paidDate) sheet.getRange(i+2, 10).setValue(Utilities.formatDate(new Date(paidDate), 'Asia/Tokyo', 'yyyy/MM/dd'));
+        Logger.log('[Sheet] Status updated: ' + reservationId + ' → ' + newStatus);
+        return;
+      }
+    }
+  } catch (e) { Logger.log('[Sheet] Status update error: ' + e.message); }
 }
